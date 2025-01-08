@@ -1,3 +1,4 @@
+// shieldBlock.go
 package items
 
 import (
@@ -12,19 +13,19 @@ type ShieldBlock struct {
 // Enforce ShieldBlock implements the Trigger interface
 var _ game.Trigger = ShieldBlock{}
 
+func (trigger ShieldBlock) Priority() int {
+	return 10 // Example priority: higher values execute earlier
+}
+
 func (trigger ShieldBlock) Condition(step game.Step) bool {
-	damage, ok := step.(game.BeforeDamageStep)
-	if ok && damage.Target != nil && damage.Target == trigger.Owner {
-		return true
+	if damageStep, ok := step.(game.BeforeDamageStep); ok {
+		return damageStep.Damage.Target != nil && damageStep.Damage.Target == trigger.Owner
 	}
 	return false
 }
 
 func (trigger ShieldBlock) Execute(step game.Step) {
-	damage, ok := step.(game.BeforeDamageStep)
-	if !ok {
-		return
+	if damageStep, ok := step.(game.BeforeDamageStep); ok {
+		damageStep.Damage.Blocked += 5
 	}
-	damage.Blocked += 5
-	return
 }

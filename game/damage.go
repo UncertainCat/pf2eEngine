@@ -5,7 +5,6 @@ import (
 	"pf2eEngine/entity"
 )
 
-// Damage struct
 type Damage struct {
 	Source  *entity.Entity
 	Target  *entity.Entity
@@ -15,27 +14,45 @@ type Damage struct {
 }
 
 type BeforeDamageStep struct {
-	*Damage
-}
-
-func (d BeforeDamageStep) Type() StepType {
-	return "BEFORE_DAMAGE"
+	BaseStep
+	Damage *Damage
 }
 
 type AfterDamageStep struct {
-	*Damage
+	BaseStep
+	Damage *Damage
 }
 
-func (d AfterDamageStep) Type() StepType {
-	return "AFTER_DAMAGE"
+func NewBeforeDamageStep(damage *Damage) BeforeDamageStep {
+	return BeforeDamageStep{
+		BaseStep: BaseStep{
+			stepType: BeforeDamage,
+			metadata: map[string]interface{}{
+				"Source": damage.Source,
+				"Target": damage.Target,
+				"Amount": damage.Amount,
+			},
+		},
+		Damage: damage,
+	}
 }
 
-// Confirm before damage implements the step interface
-var _ Step = BeforeDamageStep{}
+func NewAfterDamageStep(damage *Damage) AfterDamageStep {
+	return AfterDamageStep{
+		BaseStep: BaseStep{
+			stepType: AfterDamage,
+			metadata: map[string]interface{}{
+				"Source": damage.Source,
+				"Target": damage.Target,
+				"Amount": damage.Amount,
+			},
+		},
+		Damage: damage,
+	}
+}
 
-// Deal function
 func Deal(damage Damage) {
-	executeStep(BeforeDamageStep{&damage})
+	executeStep(NewBeforeDamageStep(&damage))
 	totalDamage := damage.Amount - damage.Blocked
 	if totalDamage < 0 {
 		totalDamage = 0
@@ -44,8 +61,8 @@ func Deal(damage Damage) {
 	fmt.Printf("Total damage after block: %d (original: %d, blocked: %d)\n", totalDamage, damage.Amount, damage.Blocked)
 	applyDamage(damage, totalDamage)
 	damage.Taken = totalDamage
-	afterDamageStep := AfterDamageStep{&damage}
-	executeStep(&afterDamageStep)
+
+	executeStep(NewAfterDamageStep(&damage))
 }
 
 func applyDamage(damage Damage, totalDamage int) {
