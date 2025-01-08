@@ -1,24 +1,30 @@
 package items
 
 import (
-	"fmt"
+	"pf2eEngine/entity"
 	"pf2eEngine/game"
 )
 
-func ShieldBlock(ctx game.Context) bool {
-	damage, ok := ctx["damage"].(game.Damage)
+type ShieldBlock struct {
+	Owner *entity.Entity
+}
+
+// Enforce ShieldBlock implements the Trigger interface
+var _ game.Trigger = ShieldBlock{}
+
+func (trigger ShieldBlock) Condition(step game.Step) bool {
+	damage, ok := step.(game.BeforeDamageStep)
+	if ok && damage.Target != nil && damage.Target == trigger.Owner {
+		return true
+	}
+	return false
+}
+
+func (trigger ShieldBlock) Execute(step game.Step) {
+	damage, ok := step.(game.BeforeDamageStep)
 	if !ok {
-		return false
+		return
 	}
-
-	source := damage.Source
-	if ctx["currentTurn"] != source {
-		return false
-	}
-
 	damage.Blocked += 5
-	ctx["damage"] = damage
-
-	fmt.Printf("%s uses Shield Block! Blocking %d damage.\n", damage.Target.Name, 5)
-	return true
+	return
 }

@@ -11,24 +11,31 @@ type Damage struct {
 	Target  *entity.Entity
 	Amount  int
 	Blocked int
+	Taken   int
 }
 
-// CreateDamage function
-func CreateDamage(ctx Context, source *entity.Entity, target *entity.Entity, amount int) Damage {
-	damage := Damage{
-		Source:  source,
-		Target:  target,
-		Amount:  amount,
-		Blocked: 0,
-	}
-	ctx["damage"] = damage
-	return damage
+type BeforeDamageStep struct {
+	*Damage
 }
+
+func (d BeforeDamageStep) Type() StepType {
+	return "BEFORE_DAMAGE"
+}
+
+type AfterDamageStep struct {
+	*Damage
+}
+
+func (d AfterDamageStep) Type() StepType {
+	return "AFTER_DAMAGE"
+}
+
+// Confirm before damage implements the step interface
+var _ Step = BeforeDamageStep{}
 
 // Deal function
-func Deal(ctx Context, damage Damage) {
-	before(damage, ctx)
-
+func Deal(damage Damage) {
+	executeStep(BeforeDamageStep{&damage})
 	totalDamage := damage.Amount - damage.Blocked
 	if totalDamage < 0 {
 		totalDamage = 0
@@ -36,21 +43,11 @@ func Deal(ctx Context, damage Damage) {
 
 	fmt.Printf("Total damage after block: %d (original: %d, blocked: %d)\n", totalDamage, damage.Amount, damage.Blocked)
 	applyDamage(damage, totalDamage)
-
-	after(damage, ctx)
+	damage.Taken = totalDamage
+	afterDamageStep := AfterDamageStep{&damage}
+	executeStep(&afterDamageStep)
 }
 
-// applyDamage helper
 func applyDamage(damage Damage, totalDamage int) {
 	damage.Target.TakeDamage(totalDamage)
-	fmt.Printf("%s takes %d damage! Remaining HP: %d\n", damage.Target.Name, totalDamage, damage.Target.HP)
-}
-
-// before and after steps
-func before(damage Damage, ctx Context) {
-	trigger(ctx, "beforeDamage")
-}
-
-func after(damage Damage, ctx Context) {
-	trigger(ctx, "afterDamage")
 }

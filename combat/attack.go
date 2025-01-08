@@ -2,6 +2,7 @@ package combat
 
 import (
 	"fmt"
+	"pf2eEngine/game"
 	dice "pf2eEngine/util"
 
 	"pf2eEngine/entity"
@@ -59,12 +60,12 @@ func PerformAttack(attacker *entity.Entity, defender *entity.Entity) {
 	switch degree {
 	case CriticalSuccess:
 		damage := (dice.Roll(8) + attacker.DamageBonus) * 2
-		defender.TakeDamage(damage)
 		fmt.Printf("Critical hit! %s deals %d damage to %s.\n", attacker.Name, damage, defender.Name)
+		game.Deal(game.Damage{Source: attacker, Target: defender, Amount: damage})
 	case Success:
 		damage := dice.Roll(8) + attacker.DamageBonus
-		defender.TakeDamage(damage)
 		fmt.Printf("Hit! %s deals %d damage to %s.\n", attacker.Name, damage, defender.Name)
+		game.Deal(game.Damage{Source: attacker, Target: defender, Amount: damage})
 	case CriticalFailure:
 		fmt.Printf("Critical miss! %s fumbles the attack.\n", attacker.Name)
 	case Failure:
