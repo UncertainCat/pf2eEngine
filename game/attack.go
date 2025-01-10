@@ -1,11 +1,9 @@
-package combat
+package game
 
 import (
 	"fmt"
-	"pf2eEngine/game"
-	dice "pf2eEngine/util"
-
 	"pf2eEngine/entity"
+	dice "pf2eEngine/util"
 )
 
 type DegreeOfSuccess int
@@ -53,22 +51,29 @@ func calculateDegreeOfSuccess(roll int, modifier int, dc int) DegreeOfSuccess {
 
 // PerformAttack executes an attack from one entity to another
 func PerformAttack(attacker *entity.Entity, defender *entity.Entity) {
+	if !attacker.UseAction(1) {
+		fmt.Printf("%s does not have enough actions to attack!\n", attacker.Name)
+		return
+	}
+
 	roll := dice.Roll(20)
-	degree := calculateDegreeOfSuccess(roll, attacker.AttackBonus, defender.AC)
-	fmt.Printf("%s rolls a %d (total %d) to attack %s (AC %d): %v\n", attacker.Name, roll, roll+attacker.AttackBonus, defender.Name, defender.AC, degree)
+	attackBonus := attacker.AttackBonus - attacker.MapCounter*5
+	degree := calculateDegreeOfSuccess(roll, attackBonus, defender.AC)
+	fmt.Printf("%s rolls a %d (total %d) to attack %s (AC %d): %v\n", attacker.Name, roll, roll+attackBonus, defender.Name, defender.AC, degree)
 
 	switch degree {
 	case CriticalSuccess:
 		damage := (dice.Roll(8) + attacker.DamageBonus) * 2
 		fmt.Printf("Critical hit! %s deals %d damage to %s.\n", attacker.Name, damage, defender.Name)
-		game.Deal(game.Damage{Source: attacker, Target: defender, Amount: damage})
+		Deal(Damage{Source: attacker, Target: defender, Amount: damage})
 	case Success:
 		damage := dice.Roll(8) + attacker.DamageBonus
 		fmt.Printf("Hit! %s deals %d damage to %s.\n", attacker.Name, damage, defender.Name)
-		game.Deal(game.Damage{Source: attacker, Target: defender, Amount: damage})
+		Deal(Damage{Source: attacker, Target: defender, Amount: damage})
 	case CriticalFailure:
 		fmt.Printf("Critical miss! %s fumbles the attack.\n", attacker.Name)
 	case Failure:
 		fmt.Printf("Miss! %s fails to hit %s.\n", attacker.Name, defender.Name)
 	}
+	attacker.MapCounter++
 }

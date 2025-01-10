@@ -1,7 +1,7 @@
-// shieldBlock.go
 package items
 
 import (
+	"fmt"
 	"pf2eEngine/entity"
 	"pf2eEngine/game"
 )
@@ -25,7 +25,13 @@ func (trigger ShieldBlock) Condition(step game.Step) bool {
 }
 
 func (trigger ShieldBlock) Execute(step game.Step) {
+	if !trigger.Owner.UseReaction() {
+		fmt.Printf("%s has no reactions remaining to block!\n", trigger.Owner.Name)
+		return
+	}
+
 	if damageStep, ok := step.(game.BeforeDamageStep); ok {
 		damageStep.Damage.Blocked += 5
+		fmt.Printf("%s uses Shield Block to block 5 damage.\n", trigger.Owner.Name)
 	}
 }
