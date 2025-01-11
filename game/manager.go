@@ -1,6 +1,7 @@
 package game
 
 import (
+	"encoding/json"
 	"fmt"
 	"pf2eEngine/entity"
 	dice "pf2eEngine/util"
@@ -8,19 +9,37 @@ import (
 )
 
 // GameState represents the state of the game, including turn order and current turn
+// Logs are added to track events in both human-readable and JSON format
 type GameState struct {
 	Entities     []*entity.Entity
 	CurrentIndex int
+	Logs         []LogEntry
 }
 
-func NewCombat(entities []*entity.Entity) *GameState {
+type LogEntry struct {
+	Message  string
+	Metadata map[string]interface{}
+	JSON     string
+}
+
+// NewGameState initializes a new game state with the given entities
+func NewGameState(entities []*entity.Entity) *GameState {
 	gs := &GameState{
 		Entities:     entities,
 		CurrentIndex: 0,
 	}
 	gs.RollInitiative()
-	gs.RunCombatLoop()
 	return gs
+}
+
+type StartTurnStep struct {
+	BaseStep
+	Entity *entity.Entity
+}
+
+type EndTurnStep struct {
+	BaseStep
+	Entity *entity.Entity
 }
 
 // RollInitiative determines initiative for all combatants and sorts them in descending order
@@ -28,17 +47,28 @@ func (gs *GameState) RollInitiative() {
 	for _, e := range gs.Entities {
 		roll := dice.Roll(20)
 		e.RollInitiative(roll)
-		fmt.Printf("%s rolls initiative: %d\n", e.Name, e.Initiative)
+		executeStep(gs, StartTurnStep{
+			BaseStep: BaseStep{stepType: StartTurn},
+			Entity:   e,
+		}, fmt.Sprintf("%s rolls initiative: %d", e.Name, e.Initiative))
 	}
 
 	sort.Slice(gs.Entities, func(i, j int) bool {
 		return gs.Entities[i].Initiative > gs.Entities[j].Initiative
 	})
 
-	fmt.Println("Initiative order:")
-	for i, e := range gs.Entities {
-		fmt.Printf("%d: %s (Initiative: %d)\n", i+1, e.Name, e.Initiative)
+	executeStep(gs, StartTurnStep{
+		BaseStep: BaseStep{stepType: StartTurn},
+		Entity:   nil,
+	}, "Initiative order determined")
+}
+
+func (gs *GameState) getInitiativeOrder() []string {
+	order := []string{}
+	for _, e := range gs.Entities {
+		order = append(order, fmt.Sprintf("%s (Initiative: %d)", e.Name, e.Initiative))
 	}
+	return order
 }
 
 // IsCombatOver checks if the combat has ended
@@ -57,15 +87,43 @@ func (gs *GameState) GetCurrentTurnEntity() *entity.Entity {
 	return gs.Entities[gs.CurrentIndex]
 }
 
-// StartTurn resets the current entity's actions and reactions
-func (gs *GameState) StartTurn() {
-	currentEntity := gs.GetCurrentTurnEntity()
-	currentEntity.ResetTurnResources()
-	fmt.Printf("%s's turn begins: %d actions, %d reactions available.\n", currentEntity.Name, currentEntity.ActionsRemaining, currentEntity.ReactionsRemaining)
+// LogEvent logs both human-readable and JSON-format logs
+func (gs *GameState) LogEvent(message string, metadata map[string]interface{}) {
+	logEntry := LogEntry{
+		Message:  message,
+		Metadata: metadata,
+		JSON:     toJSON(metadata),
+	}
+	gs.Logs = append(gs.Logs, logEntry)
+	fmt.Println(message)
 }
 
-// EndTurn moves the turn to the next living entity
+func toJSON(metadata map[string]interface{}) string {
+	jsonData, _ := json.Marshal(metadata)
+	return string(jsonData)
+}
+
+// StartTurn triggers a StartTurnStep and logs the event
+func (gs *GameState) StartTurn() {
+	currentEntity := gs.GetCurrentTurnEntity()
+	startStep := StartTurnStep{
+		BaseStep: BaseStep{stepType: StartTurn},
+		Entity:   currentEntity,
+	}
+	executeStep(gs, startStep, fmt.Sprintf("%s's turn begins", currentEntity.Name))
+
+	currentEntity.ResetTurnResources()
+}
+
+// EndTurn triggers an EndTurnStep and logs the event
 func (gs *GameState) EndTurn() {
+	currentEntity := gs.GetCurrentTurnEntity()
+	endStep := EndTurnStep{
+		BaseStep: BaseStep{stepType: EndTurn},
+		Entity:   currentEntity,
+	}
+	executeStep(gs, endStep, fmt.Sprintf("%s's turn ends", currentEntity.Name))
+
 	for {
 		gs.CurrentIndex = (gs.CurrentIndex + 1) % len(gs.Entities)
 		if gs.Entities[gs.CurrentIndex].IsAlive() {
@@ -87,8 +145,8 @@ func (gs *GameState) GetWinner() *entity.Entity {
 	return nil
 }
 
-// RunCombatLoop handles the main combat loop
-func (gs *GameState) RunCombatLoop() {
+func StartCombat(combatants []*entity.Entity) {
+	gs := NewGameState(combatants)
 	for !gs.IsCombatOver() {
 		currentEntity := gs.GetCurrentTurnEntity()
 		gs.StartTurn()
@@ -96,12 +154,18 @@ func (gs *GameState) RunCombatLoop() {
 		// Example: Find and attack the next target
 		target := currentEntity.GetNextLivingTarget(gs.Entities)
 		if target != nil {
-			fmt.Printf("%s targets %s for an attack.\n", currentEntity.Name, target.Name)
-			PerformAttack(currentEntity, target)
-			PerformAttack(currentEntity, target)
-			PerformAttack(currentEntity, target)
+			executeStep(gs, StartTurnStep{
+				BaseStep: BaseStep{stepType: StartTurn},
+				Entity:   currentEntity,
+			}, fmt.Sprintf("%s targets %s for an attack.", currentEntity.Name, target.Name))
+			ExecuteAction(gs, currentEntity, Strike(target))
+			ExecuteAction(gs, currentEntity, Strike(target))
+			ExecuteAction(gs, currentEntity, Strike(target))
 		} else {
-			fmt.Printf("%s has no valid targets to attack.\n", currentEntity.Name)
+			executeStep(gs, StartTurnStep{
+				BaseStep: BaseStep{stepType: StartTurn},
+				Entity:   currentEntity,
+			}, fmt.Sprintf("%s has no valid targets to attack.", currentEntity.Name))
 		}
 
 		gs.EndTurn()
@@ -109,8 +173,10 @@ func (gs *GameState) RunCombatLoop() {
 
 	winner := gs.GetWinner()
 	if winner != nil {
-		fmt.Printf("%s wins the combat!\n", winner.Name)
+		gs.LogEvent(fmt.Sprintf("%s wins the combat!", winner.Name), map[string]interface{}{
+			"winner": winner.Name,
+		})
 	} else {
-		fmt.Println("Combat ends with no winner.")
+		gs.LogEvent("Combat ends with no winner.", map[string]interface{}{})
 	}
 }

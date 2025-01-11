@@ -19,5 +19,5 @@ func main() {
 	combatants := []*entity.Entity{warrior, goblin}
 
 	// Start the combat loop
-	game.NewCombat(combatants)
+	game.StartCombat(combatants)
 }

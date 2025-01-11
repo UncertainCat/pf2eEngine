@@ -28,8 +28,8 @@ func NewBeforeDamageStep(damage *Damage) BeforeDamageStep {
 		BaseStep: BaseStep{
 			stepType: BeforeDamage,
 			metadata: map[string]interface{}{
-				"Source": damage.Source,
-				"Target": damage.Target,
+				"Source": damage.Source.Name,
+				"Target": damage.Target.Name,
 				"Amount": damage.Amount,
 			},
 		},
@@ -42,27 +42,27 @@ func NewAfterDamageStep(damage *Damage) AfterDamageStep {
 		BaseStep: BaseStep{
 			stepType: AfterDamage,
 			metadata: map[string]interface{}{
-				"Source": damage.Source,
-				"Target": damage.Target,
-				"Amount": damage.Amount,
+				"Source":  damage.Source.Name,
+				"Target":  damage.Target.Name,
+				"Amount":  damage.Amount,
+				"Blocked": damage.Blocked,
+				"Taken":   damage.Taken,
 			},
 		},
 		Damage: damage,
 	}
 }
 
-func Deal(damage Damage) {
-	executeStep(NewBeforeDamageStep(&damage))
+func Deal(gs *GameState, damage Damage) {
+	executeStep(gs, NewBeforeDamageStep(&damage), fmt.Sprintf("%s is about to deal damage to %s.", damage.Source.Name, damage.Target.Name))
 	totalDamage := damage.Amount - damage.Blocked
 	if totalDamage < 0 {
 		totalDamage = 0
 	}
-
-	fmt.Printf("Total damage after block: %d (original: %d, blocked: %d)\n", totalDamage, damage.Amount, damage.Blocked)
 	applyDamage(damage, totalDamage)
 	damage.Taken = totalDamage
 
-	executeStep(NewAfterDamageStep(&damage))
+	executeStep(gs, NewAfterDamageStep(&damage), fmt.Sprintf("%s dealt %d damage to %s.", damage.Source.Name, damage.Taken, damage.Target.Name))
 }
 
 func applyDamage(damage Damage, totalDamage int) {

@@ -9,8 +9,10 @@ type StepType string
 const (
 	BeforeDamage StepType = "BEFORE_DAMAGE"
 	AfterDamage  StepType = "AFTER_DAMAGE"
-	Movement     StepType = "MOVEMENT"
-	Spellcast    StepType = "SPELLCAST"
+	BeforeAttack StepType = "BEFORE_ATTACK"
+	AfterAttack  StepType = "AFTER_ATTACK"
+	StartTurn    StepType = "START_TURN"
+	EndTurn      StepType = "END_TURN"
 )
 
 type Step interface {
@@ -54,7 +56,9 @@ func RegisterTrigger(trigger Trigger, t StepType) {
 	triggers[t] = append(triggers[t], trigger)
 }
 
-func executeStep(step Step) {
+func executeStep(gs *GameState, step Step, logMessage string) {
+	gs.LogEvent(logMessage, step.Metadata())
+
 	if triggersForStep, ok := triggers[step.Type()]; ok {
 		sort.Slice(triggersForStep, func(i, j int) bool {
 			return triggersForStep[i].Priority() > triggersForStep[j].Priority()
