@@ -119,11 +119,18 @@ func Strike(target *entity.Entity) Action {
 			PerformAttack(gs, actor, target)
 		},
 	}
-
 }
 
 // PerformAttack encapsulates the full attack logic
 func PerformAttack(gs *GameState, attacker *entity.Entity, defender *entity.Entity) {
+	attackerPos := gs.Grid.GetEntityPosition(attacker)
+	defenderPos := gs.Grid.GetEntityPosition(defender)
+
+	if !gs.Grid.AreAdjacent(attackerPos, defenderPos) {
+		fmt.Printf("%s cannot attack %s; they are not adjacent.\n", attacker.Name, defender.Name)
+		return
+	}
+
 	roll := dice.Roll(20)
 	attack := &Attack{
 		Attacker: attacker,
@@ -135,7 +142,7 @@ func PerformAttack(gs *GameState, attacker *entity.Entity, defender *entity.Enti
 	attack.Degree = calculateDegreeOfSuccess(roll, attack.Result, defender.AC)
 
 	details := fmt.Sprintf(
-		"Attack Details:\n		Attacker: %s\n		Defender: %s\n\tRoll: %d\n\tBonus: %d\n\tResult: %d\n\tDefender AC: %d\n\tDegree: %v",
+		"Attack Details:\n\tAttacker: %s\n\tDefender: %s\n\tRoll: %d\n\tBonus: %d\n\tResult: %d\n\tDefender AC: %d\n\tDegree: %v",
 		attacker.Name, defender.Name, roll, attack.Bonus, attack.Result, defender.AC, attack.Degree.String(),
 	)
 

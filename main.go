@@ -16,8 +16,11 @@ func main() {
 	warrior := entity.NewEntity("Warrior", 30, 15, 5, 3)
 	goblin := entity.NewEntity("Goblin", 20, 13, 3, 2)
 	game.RegisterTrigger(items.ShieldBlock{Owner: warrior}, "BEFORE_DAMAGE")
-	combatants := []*entity.Entity{warrior, goblin}
+	spawns := []game.Spawn{
+		{Unit: goblin, Coordinates: [2]int{0, 0}},
+		{Unit: warrior, Coordinates: [2]int{1, 0}},
+	}
 
 	// Start the combat loop
-	game.StartCombat(combatants)
+	game.StartCombat(spawns, 10, 10)
 }

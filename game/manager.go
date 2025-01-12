@@ -11,6 +11,7 @@ import (
 // GameState represents the state of the game, including turn order and current turn
 // Logs are added to track events in both human-readable and JSON format
 type GameState struct {
+	Grid         *Grid
 	Entities     []*entity.Entity
 	CurrentIndex int
 	Logs         []LogEntry
@@ -22,11 +23,20 @@ type LogEntry struct {
 	JSON     string
 }
 
-// NewGameState initializes a new game state with the given entities
-func NewGameState(entities []*entity.Entity) *GameState {
+// NewGameState initializes a new game state with the given entities and grid
+func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
+	entities := []*entity.Entity{}
+	for _, spawn := range spawns {
+		entities = append(entities, spawn.Unit)
+	}
 	gs := &GameState{
-		Entities:     entities,
 		CurrentIndex: 0,
+		Grid:         NewGrid(gridWidth, gridHeight),
+		Entities:     entities,
+	}
+	// Place entities on the grid at their initial positions (e.g., in a row)
+	for _, e := range spawns {
+		gs.Grid.AddEntity(Position{X: e.Coordinates[0], Y: e.Coordinates[1]}, e.Unit)
 	}
 	gs.RollInitiative()
 	return gs
@@ -145,8 +155,13 @@ func (gs *GameState) GetWinner() *entity.Entity {
 	return nil
 }
 
-func StartCombat(combatants []*entity.Entity) {
-	gs := NewGameState(combatants)
+type Spawn struct {
+	Unit        *entity.Entity
+	Coordinates [2]int
+}
+
+func StartCombat(spawns []Spawn, gridWidth, gridHeight int) {
+	gs := NewGameState(spawns, gridWidth, gridHeight)
 	for !gs.IsCombatOver() {
 		currentEntity := gs.GetCurrentTurnEntity()
 		gs.StartTurn()
@@ -154,13 +169,17 @@ func StartCombat(combatants []*entity.Entity) {
 		// Example: Find and attack the next target
 		target := currentEntity.GetNextLivingTarget(gs.Entities)
 		if target != nil {
-			executeStep(gs, StartTurnStep{
-				BaseStep: BaseStep{stepType: StartTurn},
-				Entity:   currentEntity,
-			}, fmt.Sprintf("%s targets %s for an attack.", currentEntity.Name, target.Name))
-			ExecuteAction(gs, currentEntity, Strike(target))
-			ExecuteAction(gs, currentEntity, Strike(target))
-			ExecuteAction(gs, currentEntity, Strike(target))
+			attackerPos := gs.Grid.GetEntityPosition(currentEntity)
+			targetPos := gs.Grid.GetEntityPosition(target)
+			if gs.Grid.AreAdjacent(attackerPos, targetPos) {
+				executeStep(gs, StartTurnStep{
+					BaseStep: BaseStep{stepType: StartTurn},
+					Entity:   currentEntity,
+				}, fmt.Sprintf("%s targets %s for an attack.", currentEntity.Name, target.Name))
+				ExecuteAction(gs, currentEntity, Strike(target))
+			} else {
+				fmt.Printf("%s cannot attack %s; they are not adjacent.\n", currentEntity.Name, target.Name)
+			}
 		} else {
 			executeStep(gs, StartTurnStep{
 				BaseStep: BaseStep{stepType: StartTurn},

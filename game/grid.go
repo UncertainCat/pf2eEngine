@@ -68,6 +68,16 @@ func (g *Grid) GetEntityAt(pos Position) *entity.Entity {
 	return g.Cells[pos]
 }
 
+// GetEntityPosition retrieves the position of a specific entity on the grid.
+func (g *Grid) GetEntityPosition(e *entity.Entity) Position {
+	for pos, entity := range g.Cells {
+		if entity == e {
+			return pos
+		}
+	}
+	return Position{-1, -1} // Invalid position if entity is not found
+}
+
 // GetAdjacentPositions returns all valid adjacent positions to a given position.
 func (g *Grid) GetAdjacentPositions(pos Position) []Position {
 	candidates := []Position{
@@ -83,6 +93,11 @@ func (g *Grid) GetAdjacentPositions(pos Position) []Position {
 		}
 	}
 	return valid
+}
+
+// AreAdjacent checks if two positions are adjacent on the grid.
+func (g *Grid) AreAdjacent(pos1, pos2 Position) bool {
+	return g.CalculateDistance(pos1, pos2) == 1
 }
 
 // CalculateDistance computes the Manhattan distance between two positions.
