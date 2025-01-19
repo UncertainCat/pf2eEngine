@@ -1,4 +1,4 @@
-package entity
+package game
 
 // Attributes represent additional attributes for an entity
 // This can be extended for more complex mechanics

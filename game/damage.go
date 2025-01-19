@@ -2,12 +2,11 @@ package game
 
 import (
 	"fmt"
-	"pf2eEngine/entity"
 )
 
 type Damage struct {
-	Source  *entity.Entity
-	Target  *entity.Entity
+	Source  *Entity
+	Target  *Entity
 	Amount  int
 	Blocked int
 	Taken   int

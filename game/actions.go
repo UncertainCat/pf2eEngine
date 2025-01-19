@@ -2,13 +2,12 @@ package game
 
 import (
 	"fmt"
-	"pf2eEngine/entity"
 	dice "pf2eEngine/util"
 )
 
 type Attack struct {
-	Attacker *entity.Entity
-	Defender *entity.Entity
+	Attacker *Entity
+	Defender *Entity
 	Roll     int
 	Bonus    int
 	Result   int
@@ -58,8 +57,10 @@ type ActionType string
 
 const (
 	SingleAction ActionType = "SINGLE_ACTION"
+	FreeAction   ActionType = "FREE_ACTION"
 	Activity     ActionType = "ACTIVITY"
 	Reaction     ActionType = "REACTION"
+	EndOfTurn    ActionType = "END_OF_TURN"
 )
 
 type Action struct {
@@ -67,22 +68,31 @@ type Action struct {
 	Type        ActionType
 	Cost        int
 	Description string
-	Perform     func(gs *GameState, actor *entity.Entity)
+	Perform     func(gs *GameState, actor *Entity)
 }
 
 type StartActionStep struct {
 	BaseStep
 	Action Action
-	Actor  *entity.Entity
+	Actor  *Entity
 }
 
 type EndActionStep struct {
 	BaseStep
 	Action Action
-	Actor  *entity.Entity
+	Actor  *Entity
 }
 
-func ExecuteAction(gs *GameState, actor *entity.Entity, action Action) {
+func EndTurnAction(gs *GameState, actor *Entity) Action {
+	return Action{
+		Name:    "End Turn",
+		Type:    EndOfTurn,
+		Cost:    0,
+		Perform: func(gs *GameState, actor *Entity) {},
+	}
+}
+
+func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 	if actor.ActionsRemaining < action.Cost {
 		fmt.Printf("%s does not have enough actions to perform %s.\n", actor.Name, action.Name)
 		return
@@ -104,25 +114,20 @@ func ExecuteAction(gs *GameState, actor *entity.Entity, action Action) {
 	}, fmt.Sprintf("%s completed the action: %s.", actor.Name, action.Name))
 }
 
-type StrikeAction struct {
-	Target *entity.Entity
-	Action
-}
-
-func Strike(target *entity.Entity) Action {
+func Strike(target *Entity) Action {
 	return Action{
 		Name:        "Strike",
 		Type:        SingleAction,
 		Cost:        1,
 		Description: "A basic melee attack.",
-		Perform: func(gs *GameState, actor *entity.Entity) {
+		Perform: func(gs *GameState, actor *Entity) {
 			PerformAttack(gs, actor, target)
 		},
 	}
 }
 
 // PerformAttack encapsulates the full attack logic
-func PerformAttack(gs *GameState, attacker *entity.Entity, defender *entity.Entity) {
+func PerformAttack(gs *GameState, attacker *Entity, defender *Entity) {
 	attackerPos := gs.Grid.GetEntityPosition(attacker)
 	defenderPos := gs.Grid.GetEntityPosition(defender)
 

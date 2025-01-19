@@ -2,12 +2,11 @@ package items
 
 import (
 	"fmt"
-	"pf2eEngine/entity"
 	"pf2eEngine/game"
 )
 
 type ShieldBlock struct {
-	Owner *entity.Entity
+	Owner *game.Entity
 }
 
 // Enforce ShieldBlock implements the Trigger interface

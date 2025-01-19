@@ -1,9 +1,5 @@
 package game
 
-import (
-	"pf2eEngine/entity"
-)
-
 // Position represents a coordinate on the grid.
 type Position struct {
 	X, Y int
@@ -13,7 +9,7 @@ type Position struct {
 type Grid struct {
 	Width  int
 	Height int
-	Cells  map[Position]*entity.Entity
+	Cells  map[Position]*Entity
 }
 
 // NewGrid initializes a new grid with the given dimensions.
@@ -21,12 +17,12 @@ func NewGrid(width, height int) *Grid {
 	return &Grid{
 		Width:  width,
 		Height: height,
-		Cells:  make(map[Position]*entity.Entity),
+		Cells:  make(map[Position]*Entity),
 	}
 }
 
 // AddEntity places an entity at a specific position on the grid.
-func (g *Grid) AddEntity(pos Position, e *entity.Entity) bool {
+func (g *Grid) AddEntity(pos Position, e *Entity) bool {
 	if !g.IsValidPosition(pos) || g.IsOccupied(pos) {
 		return false
 	}
@@ -64,12 +60,12 @@ func (g *Grid) IsValidPosition(pos Position) bool {
 }
 
 // GetEntityAt retrieves the entity at a specific position.
-func (g *Grid) GetEntityAt(pos Position) *entity.Entity {
+func (g *Grid) GetEntityAt(pos Position) *Entity {
 	return g.Cells[pos]
 }
 
 // GetEntityPosition retrieves the position of a specific entity on the grid.
-func (g *Grid) GetEntityPosition(e *entity.Entity) Position {
+func (g *Grid) GetEntityPosition(e *Entity) Position {
 	for pos, entity := range g.Cells {
 		if entity == e {
 			return pos

@@ -3,7 +3,6 @@ package game
 import (
 	"encoding/json"
 	"fmt"
-	"pf2eEngine/entity"
 	dice "pf2eEngine/util"
 	"sort"
 )
@@ -12,7 +11,7 @@ import (
 // Logs are added to track events in both human-readable and JSON format
 type GameState struct {
 	Grid         *Grid
-	Entities     []*entity.Entity
+	Entities     []*Entity
 	CurrentIndex int
 	Logs         []LogEntry
 }
@@ -25,7 +24,7 @@ type LogEntry struct {
 
 // NewGameState initializes a new game state with the given entities and grid
 func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
-	entities := []*entity.Entity{}
+	entities := []*Entity{}
 	for _, spawn := range spawns {
 		entities = append(entities, spawn.Unit)
 	}
@@ -44,12 +43,16 @@ func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
 
 type StartTurnStep struct {
 	BaseStep
-	Entity *entity.Entity
+	Entity *Entity
 }
 
 type EndTurnStep struct {
 	BaseStep
-	Entity *entity.Entity
+	Entity *Entity
+}
+
+func (gs *GameState) IsEntityTurn(e *Entity) bool {
+	return gs.GetCurrentTurnEntity() == e
 }
 
 // RollInitiative determines initiative for all combatants and sorts them in descending order
@@ -93,7 +96,7 @@ func (gs *GameState) IsCombatOver() bool {
 }
 
 // GetCurrentTurnEntity returns the entity whose turn it is
-func (gs *GameState) GetCurrentTurnEntity() *entity.Entity {
+func (gs *GameState) GetCurrentTurnEntity() *Entity {
 	return gs.Entities[gs.CurrentIndex]
 }
 
@@ -143,7 +146,7 @@ func (gs *GameState) EndTurn() {
 }
 
 // GetWinner returns the winning entity, if combat is over
-func (gs *GameState) GetWinner() *entity.Entity {
+func (gs *GameState) GetWinner() *Entity {
 	if !gs.IsCombatOver() {
 		return nil
 	}
@@ -156,7 +159,7 @@ func (gs *GameState) GetWinner() *entity.Entity {
 }
 
 type Spawn struct {
-	Unit        *entity.Entity
+	Unit        *Entity
 	Coordinates [2]int
 }
 
@@ -165,28 +168,11 @@ func StartCombat(spawns []Spawn, gridWidth, gridHeight int) {
 	for !gs.IsCombatOver() {
 		currentEntity := gs.GetCurrentTurnEntity()
 		gs.StartTurn()
-
-		// Example: Find and attack the next target
-		target := currentEntity.GetNextLivingTarget(gs.Entities)
-		if target != nil {
-			attackerPos := gs.Grid.GetEntityPosition(currentEntity)
-			targetPos := gs.Grid.GetEntityPosition(target)
-			if gs.Grid.AreAdjacent(attackerPos, targetPos) {
-				executeStep(gs, StartTurnStep{
-					BaseStep: BaseStep{stepType: StartTurn},
-					Entity:   currentEntity,
-				}, fmt.Sprintf("%s targets %s for an attack.", currentEntity.Name, target.Name))
-				ExecuteAction(gs, currentEntity, Strike(target))
-			} else {
-				fmt.Printf("%s cannot attack %s; they are not adjacent.\n", currentEntity.Name, target.Name)
-			}
-		} else {
-			executeStep(gs, StartTurnStep{
-				BaseStep: BaseStep{stepType: StartTurn},
-				Entity:   currentEntity,
-			}, fmt.Sprintf("%s has no valid targets to attack.", currentEntity.Name))
+		action := currentEntity.Controller.DecideAction(gs, currentEntity)
+		for action.Type != EndOfTurn {
+			ExecuteAction(gs, currentEntity, action)
+			action = currentEntity.Controller.DecideAction(gs, currentEntity)
 		}
-
 		gs.EndTurn()
 	}
 
