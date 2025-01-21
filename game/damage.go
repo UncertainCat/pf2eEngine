@@ -2,14 +2,22 @@ package game
 
 import (
 	"fmt"
+	dice "pf2eEngine/util"
 )
 
 type Damage struct {
 	Source  *Entity
 	Target  *Entity
-	Amount  int
+	Amount  map[DamageType]DamageAmount
 	Blocked int
 	Taken   int
+}
+
+func (d Damage) Double() Damage {
+	for k, v := range d.Amount {
+		d.Amount[k] = DamageAmount{Amount: v.Amount * 2, Type: v.Type}
+	}
+	return d
 }
 
 type BeforeDamageStep struct {
@@ -54,11 +62,12 @@ func NewAfterDamageStep(damage *Damage) AfterDamageStep {
 
 func Deal(gs *GameState, damage Damage) {
 	executeStep(gs, NewBeforeDamageStep(&damage), fmt.Sprintf("%s is about to deal damage to %s.", damage.Source.Name, damage.Target.Name))
-	totalDamage := damage.Amount - damage.Blocked
-	if totalDamage < 0 {
-		totalDamage = 0
+	totalDamage := 0
+	for _, dr := range damage.Amount {
+		dealDamage := dr.Amount - damage.Blocked
+		totalDamage += dealDamage
+		applyDamage(damage, dealDamage)
 	}
-	applyDamage(damage, totalDamage)
 	damage.Taken = totalDamage
 
 	executeStep(gs, NewAfterDamageStep(&damage), fmt.Sprintf("%s dealt %d damage to %s.", damage.Source.Name, damage.Taken, damage.Target.Name))
@@ -66,4 +75,46 @@ func Deal(gs *GameState, damage Damage) {
 
 func applyDamage(damage Damage, totalDamage int) {
 	damage.Target.TakeDamage(totalDamage)
+}
+
+type DamageType string
+
+const (
+	Bludgeoning DamageType = "BLUDGEONING"
+	Piercing    DamageType = "PIERCING"
+	Slashing    DamageType = "SLASHING"
+)
+
+type DamageRoll struct {
+	Die   int
+	Count int
+	Bonus int
+	Type  DamageType
+}
+
+func (dr DamageRoll) Roll() DamageAmount {
+	amount := dr.Bonus
+	for i := 0; i < dr.Count; i++ {
+		amount += dice.Roll(dr.Die)
+	}
+	return DamageAmount{Amount: amount, Type: dr.Type}
+}
+
+type DamageAmount struct {
+	Amount int
+	Type   DamageType
+}
+
+type BaseAttack struct {
+	Damage []DamageRoll
+	Bonus  int
+}
+
+func (ba BaseAttack) RollDamage() map[DamageType]DamageAmount {
+	damage := map[DamageType]DamageAmount{}
+	for _, dr := range ba.Damage {
+		amount := dr.Roll()
+		damage[amount.Type] = amount
+	}
+	return damage
 }

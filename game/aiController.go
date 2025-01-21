@@ -1,6 +1,7 @@
 package game
 
 import (
+	"fmt"
 	"math"
 )
 
@@ -16,7 +17,30 @@ func (a AIController) NextAction(gs *GameState, e *Entity) Action {
 	if target == nil || e.ActionsRemaining == 0 {
 		return EndTurnAction(gs, e)
 	}
-	return Strike(target)
+	strikes := getStrikeCards(e)
+	if len(strikes) == 0 {
+		fmt.Println("No strike cards available for", e.Name)
+		return EndTurnAction(gs, e)
+	}
+	params := map[string]interface{}{}
+	params["targetID"] = target.Id
+	action, err := strikes[0].GenerateAction(gs, e, params)
+	if err != nil {
+		return EndTurnAction(gs, e)
+	}
+	return action
+}
+
+func getStrikeCards(e *Entity) []*ActionCard {
+	cards := e.ActionCards
+	// Filter out all non-strike cards
+	var strikeCards []*ActionCard
+	for _, card := range cards {
+		if card.Name == "Strike" {
+			strikeCards = append(strikeCards, card)
+		}
+	}
+	return strikeCards
 }
 
 // findNearestEntity locates the closest living entity to the given entity

@@ -61,7 +61,7 @@ func (p *PlayerController) AddActionWithCard(entityID uuid.UUID, actionCardID uu
 		return fmt.Errorf("action card not found")
 	}
 
-	action, err := actionCard.CreateAction(*p.GameState, entity, params)
+	action, err := actionCard.GenerateAction(p.GameState, entity, params)
 	if err != nil {
 		return fmt.Errorf("failed to create action: %w", err)
 	}

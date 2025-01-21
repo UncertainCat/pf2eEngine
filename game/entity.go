@@ -10,25 +10,25 @@ type Entity struct {
 	Name               string
 	HP                 int
 	AC                 int
-	AttackBonus        int
-	DamageBonus        int
 	Initiative         int
 	ActionsRemaining   int
 	ReactionsRemaining int
 	MapCounter         int
 	Controller         Controller
-	ActionCards        []ActionCard
+	ActionCards        []*ActionCard
+}
+
+func (e *Entity) AddActionCard(card *ActionCard) {
+	e.ActionCards = append(e.ActionCards, card)
 }
 
 // NewEntity creates a new Entity instance
-func NewEntity(name string, hp, ac, attackBonus, damageBonus int) *Entity {
+func NewEntity(name string, hp, ac int) *Entity {
 	return &Entity{
 		Id:                 uuid.New(),
 		Name:               name,
 		HP:                 hp,
 		AC:                 ac,
-		AttackBonus:        attackBonus,
-		DamageBonus:        damageBonus,
 		ActionsRemaining:   3,
 		ReactionsRemaining: 1,
 		Controller:         NewAIController(),
@@ -66,8 +66,8 @@ func (e *Entity) ResetTurnResources() {
 	e.MapCounter = 0
 }
 
-// UseAction attempts to consume an action
-func (e *Entity) UseAction(cost int) bool {
+// SpendAction attempts to consume an action
+func (e *Entity) SpendAction(cost int) bool {
 	if e.ActionsRemaining >= cost {
 		e.ActionsRemaining -= cost
 		return true
@@ -108,15 +108,15 @@ func findEntityByID(entities []*Entity, id uuid.UUID) *Entity {
 	return nil
 }
 
-func findActionCardByID(entity *Entity, id uuid.UUID) (ActionCard, error) {
+func findActionCardByID(entity *Entity, id uuid.UUID) (*ActionCard, error) {
 	for _, card := range entity.GetActionCards() {
 		if card.ID == id {
 			return card, nil
 		}
 	}
-	return ActionCard{}, fmt.Errorf("action card not found")
+	return nil, fmt.Errorf("action card not found")
 }
 
-func (e *Entity) GetActionCards() []ActionCard {
+func (e *Entity) GetActionCards() []*ActionCard {
 	return e.ActionCards
 }

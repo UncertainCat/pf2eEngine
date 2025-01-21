@@ -103,6 +103,13 @@ func (g *Grid) CalculateDistance(from, to Position) int {
 	return abs(dx) + abs(dy)
 }
 
+// CalculateDistanceBetweenEntities computes the distance between two entities.
+func (g *Grid) CalculateDistanceBetweenEntities(e1, e2 *Entity) int {
+	pos1 := g.GetEntityPosition(e1)
+	pos2 := g.GetEntityPosition(e2)
+	return g.CalculateDistance(pos1, pos2)
+}
+
 // abs returns the absolute value of an integer.
 func abs(x int) int {
 	if x < 0 {

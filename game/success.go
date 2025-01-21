@@ -26,11 +26,11 @@ func (d DegreeOfSuccess) String() string {
 
 func calculateDegreeOfSuccess(roll int, total int, dc int) DegreeOfSuccess {
 	if roll == 20 {
-		if total >= dc+10 {
-			return CriticalSuccess
-		}
 		if total >= dc {
 			return CriticalSuccess
+		}
+		if total <= dc-10 {
+			return Failure
 		}
 		return Success
 	}
@@ -38,7 +38,10 @@ func calculateDegreeOfSuccess(roll int, total int, dc int) DegreeOfSuccess {
 		if total >= dc+10 {
 			return Success
 		}
-		return Failure
+		if total >= dc {
+			return Failure
+		}
+		return CriticalFailure
 	}
 	if total >= dc+10 {
 		return CriticalSuccess

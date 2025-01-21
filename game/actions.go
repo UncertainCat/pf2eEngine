@@ -87,16 +87,23 @@ func EndTurnAction(gs *GameState, actor *Entity) Action {
 	return Action{
 		Name:    "End Turn",
 		Type:    EndOfTurn,
-		Cost:    0,
 		Perform: func(gs *GameState, actor *Entity) {},
 	}
 }
 
 func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 	if actor.ActionsRemaining < action.Cost {
-		fmt.Printf("%s does not have enough actions to perform %s.\n", actor.Name, action.Name)
+		fmt.Printf("%s does not have enough actions to perform %s. Actions remaining: %d, action cost: %d.\n",
+			actor.Name, action.Name, actor.ActionsRemaining, action.Cost)
 		return
 	}
+
+	fmt.Printf("%s starts the action: %s. Actions remaining before use: %d, action cost: %d.\n",
+		actor.Name, action.Name, actor.ActionsRemaining, action.Cost)
+
+	actor.SpendAction(action.Cost)
+	fmt.Printf("%s used %d actions. Actions remaining: %d.\n",
+		actor.Name, action.Cost, actor.ActionsRemaining)
 
 	executeStep(gs, StartActionStep{
 		BaseStep: BaseStep{stepType: StartTurn},
@@ -104,7 +111,6 @@ func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 		Actor:    actor,
 	}, fmt.Sprintf("%s starts the action: %s.", actor.Name, action.Name))
 
-	actor.UseAction(action.Cost)
 	action.Perform(gs, actor)
 
 	executeStep(gs, EndActionStep{
@@ -112,22 +118,13 @@ func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 		Action:   action,
 		Actor:    actor,
 	}, fmt.Sprintf("%s completed the action: %s.", actor.Name, action.Name))
-}
 
-func Strike(target *Entity) Action {
-	return Action{
-		Name:        "Strike",
-		Type:        SingleAction,
-		Cost:        1,
-		Description: "A basic melee attack.",
-		Perform: func(gs *GameState, actor *Entity) {
-			PerformAttack(gs, actor, target)
-		},
-	}
+	fmt.Printf("%s completed the action: %s. Actions remaining: %d.\n",
+		actor.Name, action.Name, actor.ActionsRemaining)
 }
 
 // PerformAttack encapsulates the full attack logic
-func PerformAttack(gs *GameState, attacker *Entity, defender *Entity) {
+func PerformAttack(gs *GameState, baseAttack BaseAttack, attacker *Entity, defender *Entity) {
 	attackerPos := gs.Grid.GetEntityPosition(attacker)
 	defenderPos := gs.Grid.GetEntityPosition(defender)
 
@@ -141,8 +138,8 @@ func PerformAttack(gs *GameState, attacker *Entity, defender *Entity) {
 		Attacker: attacker,
 		Defender: defender,
 		Roll:     roll,
-		Bonus:    attacker.AttackBonus - attacker.MapCounter*5,
-		Result:   roll + attacker.AttackBonus - attacker.MapCounter*5,
+		Bonus:    baseAttack.Bonus - attacker.MapCounter*5,
+		Result:   roll + baseAttack.Bonus - attacker.MapCounter*5,
 	}
 	attack.Degree = calculateDegreeOfSuccess(roll, attack.Result, defender.AC)
 
@@ -151,15 +148,16 @@ func PerformAttack(gs *GameState, attacker *Entity, defender *Entity) {
 		attacker.Name, defender.Name, roll, attack.Bonus, attack.Result, defender.AC, attack.Degree.String(),
 	)
 
+	damageRoll := baseAttack.RollDamage()
+
+	damage := Damage{Source: attacker, Target: defender, Amount: damageRoll}
 	switch attack.Degree {
 	case CriticalSuccess:
-		damage := (dice.Roll(8) + attacker.DamageBonus) * 2
 		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has critically hit %s! Details:\n%s", attacker.Name, defender.Name, details))
-		Deal(gs, Damage{Source: attacker, Target: defender, Amount: damage})
+		Deal(gs, damage.Double())
 	case Success:
-		damage := dice.Roll(8) + attacker.DamageBonus
 		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has hit %s. Details:\n%s", attacker.Name, defender.Name, details))
-		Deal(gs, Damage{Source: attacker, Target: defender, Amount: damage})
+		Deal(gs, damage)
 	case Failure:
 		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has missed %s. Details:\n%s", attacker.Name, defender.Name, details))
 	case CriticalFailure:

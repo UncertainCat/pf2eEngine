@@ -2,6 +2,7 @@ package game
 
 import (
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 )
 
@@ -15,63 +16,140 @@ const (
 	FreeActionCard     ActionCardType = "FREE_ACTION"
 )
 
-// ActionCard defines a reusable template for actions
+const (
+	ActionCost = "action_cost"
+	TargetID   = "targetID"
+)
+
+func (a ActionCardType) ToCost(params map[string]interface{}) int {
+	switch a {
+	case OneActionCard:
+		return 1
+	case TwoActionCard:
+		return 2
+	case ThreeActionCard:
+		return 3
+	case VariableActionCard:
+		return params[ActionCost].(int)
+	case FreeActionCard:
+		return 0
+	default:
+		return 0
+	}
+}
+
 type ActionCard struct {
 	ID              uuid.UUID
 	Name            string
 	Type            ActionCardType
 	Description     string
-	ActionGenerator func(owner *Entity, state GameState, params map[string]interface{}) (Action, error)
+	ActionGenerator func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error)
 }
 
-// NewActionCard initializes an action card with given parameters
-func NewActionCard(name string, actionType ActionCardType, description string) *ActionCard {
+func (ac ActionCard) GenerateAction(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
+	action, err := ac.ActionGenerator(gs, actor, params)
+	if err != nil {
+		fmt.Printf("Failed to generate action: %v\n Params: %v\n", err, params)
+		return Action{}, err
+	}
+	return action, nil
+}
+
+func getSingleTarget(gs *GameState, actor *Entity, criteria []TargetCriterion, params map[string]interface{}) (*Entity, error) {
+	targetID := params[TargetID].(uuid.UUID)
+	target := findEntityByID(gs.Entities, targetID)
+	if target == nil {
+		return nil, errors.New("target not found")
+	}
+	for _, criterion := range criteria {
+		if err := criterion(gs, actor, params); err != nil {
+			return nil, err
+		}
+	}
+	return target, nil
+}
+
+func getTarget(gs *GameState, params map[string]interface{}) (*Entity, error) {
+	targetID, err := params[TargetID].(uuid.UUID)
+	if !err {
+		return nil, errors.New("targetID not found in params")
+	}
+	target := findEntityByID(gs.Entities, targetID)
+	if target == nil {
+		return nil, errors.New("target entity does not exist")
+	}
+	return target, nil
+}
+
+type TargetCriterion func(gs *GameState, actor *Entity, params map[string]interface{}) error
+
+func Range(maxDistance int) TargetCriterion {
+	return func(gs *GameState, actor *Entity, params map[string]interface{}) error {
+		target, err := getTarget(gs, params)
+		if err != nil {
+			return err
+		}
+		gs.Grid.GetEntityPosition(actor)
+		if gs.Grid.CalculateDistanceBetweenEntities(target, actor) > maxDistance {
+			return fmt.Errorf("target is out of range (max: %d)", maxDistance)
+		}
+		return nil
+	}
+}
+
+func IsAlive() TargetCriterion {
+	return func(gs *GameState, actor *Entity, params map[string]interface{}) error {
+		targetId, ok := params[TargetID].(uuid.UUID)
+		target := findEntityByID(gs.Entities, targetId)
+		if !ok {
+			return errors.New("target not found")
+		}
+		if !target.IsAlive() {
+			return errors.New("target is not alive")
+		}
+		return nil
+	}
+}
+
+func NewSingleTargetActionCard(
+	name string,
+	actionType ActionCardType,
+	description string,
+	criteria []TargetCriterion,
+	actionFunc func(gs *GameState, actor *Entity, target *Entity),
+) *ActionCard {
 	return &ActionCard{
 		ID:          uuid.New(),
 		Name:        name,
 		Type:        actionType,
 		Description: description,
-	}
-}
-
-// CreateAction instantiates an action based on the card and additional parameters
-func (ac *ActionCard) CreateAction(gs GameState, owner *Entity, params map[string]interface{}) (Action, error) {
-	return ac.ActionGenerator(owner, gs, params)
-}
-
-var (
-	ErrInvalidParams  = errors.New("invalid parameters")
-	ErrEntityNotFound = errors.New("entity not found")
-)
-
-// Basic Action Cards
-
-func NewStrikeCard() *ActionCard {
-	return &ActionCard{
-		ID:          uuid.New(),
-		Name:        "Strike",
-		Type:        OneActionCard,
-		Description: "Make a melee Strike against a target.",
-		ActionGenerator: func(owner *Entity, state GameState, params map[string]interface{}) (Action, error) {
-			targetID, ok := params["target"].(uuid.UUID)
-			if !ok {
-				return Action{}, ErrInvalidParams
+		ActionGenerator: func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
+			target, err := getSingleTarget(gs, actor, criteria, params)
+			if err != nil {
+				return Action{}, err
 			}
-
-			target := findEntityByID(state.Entities, targetID)
-			if target == nil {
-				return Action{}, ErrEntityNotFound
-			}
-
 			return Action{
-				Name:        "Strike",
-				Type:        SingleAction,
-				Cost:        1,
-				Description: "Melee attack action",
+				Name: name,
+				Cost: actionType.ToCost(params),
 				Perform: func(gs *GameState, actor *Entity) {
-					PerformAttack(gs, actor, target)
+					actionFunc(gs, actor, target)
 				},
 			}, nil
 		},
 	}
+}
+
+func NewStrikeCard(attack BaseAttack) *ActionCard {
+	return NewSingleTargetActionCard(
+		"Strike",
+		OneActionCard,
+		"Make a melee strike against a target within range 5.",
+		[]TargetCriterion{
+			IsAlive(),
+			Range(5),
+		},
+		func(gs *GameState, actor *Entity, target *Entity) {
+			PerformAttack(gs, attack, actor, target)
+		},
+	)
 }

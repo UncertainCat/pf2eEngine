@@ -168,10 +168,10 @@ func StartCombat(spawns []Spawn, gridWidth, gridHeight int) {
 	for !gs.IsCombatOver() {
 		currentEntity := gs.GetCurrentTurnEntity()
 		gs.StartTurn()
-		action := currentEntity.Controller.DecideAction(gs, currentEntity)
+		action := currentEntity.Controller.NextAction(gs, currentEntity)
 		for action.Type != EndOfTurn {
 			ExecuteAction(gs, currentEntity, action)
-			action = currentEntity.Controller.DecideAction(gs, currentEntity)
+			action = currentEntity.Controller.NextAction(gs, currentEntity)
 		}
 		gs.EndTurn()
 	}
