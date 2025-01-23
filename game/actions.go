@@ -98,9 +98,6 @@ func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 		return
 	}
 
-	fmt.Printf("%s starts the action: %s. Actions remaining before use: %d, action cost: %d.\n",
-		actor.Name, action.Name, actor.ActionsRemaining, action.Cost)
-
 	actor.SpendAction(action.Cost)
 	fmt.Printf("%s used %d actions. Actions remaining: %d.\n",
 		actor.Name, action.Cost, actor.ActionsRemaining)
@@ -118,9 +115,6 @@ func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 		Action:   action,
 		Actor:    actor,
 	}, fmt.Sprintf("%s completed the action: %s.", actor.Name, action.Name))
-
-	fmt.Printf("%s completed the action: %s. Actions remaining: %d.\n",
-		actor.Name, action.Name, actor.ActionsRemaining)
 }
 
 // PerformAttack encapsulates the full attack logic

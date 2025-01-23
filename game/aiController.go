@@ -13,7 +13,7 @@ func NewAIController() AIController {
 }
 
 func (a AIController) NextAction(gs *GameState, e *Entity) Action {
-	target := findNearestEntity(gs, e)
+	target := findNearestEnemy(gs, e)
 	if target == nil || e.ActionsRemaining == 0 {
 		return EndTurnAction(gs, e)
 	}
@@ -44,13 +44,13 @@ func getStrikeCards(e *Entity) []*ActionCard {
 }
 
 // findNearestEntity locates the closest living entity to the given entity
-func findNearestEntity(gs *GameState, e *Entity) *Entity {
+func findNearestEnemy(gs *GameState, e *Entity) *Entity {
 	currentPos := gs.Grid.GetEntityPosition(e)
 	var closest *Entity
 	minDistance := math.MaxInt
 
 	for _, other := range gs.Entities {
-		if other == e || !other.IsAlive() {
+		if other == e || !other.IsAlive() || other.Faction == e.Faction {
 			continue
 		}
 		otherPos := gs.Grid.GetEntityPosition(other)

@@ -16,14 +16,22 @@ type Entity struct {
 	MapCounter         int
 	Controller         Controller
 	ActionCards        []*ActionCard
+	Faction            Faction
 }
 
 func (e *Entity) AddActionCard(card *ActionCard) {
 	e.ActionCards = append(e.ActionCards, card)
 }
 
+type Faction int
+
+const (
+	GoodGuys Faction = iota
+	BadGuys
+)
+
 // NewEntity creates a new Entity instance
-func NewEntity(name string, hp, ac int) *Entity {
+func NewEntity(name string, hp, ac int, faction Faction) *Entity {
 	return &Entity{
 		Id:                 uuid.New(),
 		Name:               name,
@@ -32,6 +40,7 @@ func NewEntity(name string, hp, ac int) *Entity {
 		ActionsRemaining:   3,
 		ReactionsRemaining: 1,
 		Controller:         NewAIController(),
+		Faction:            faction,
 	}
 }
 

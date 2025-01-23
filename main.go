@@ -13,33 +13,41 @@ func main() {
 
 	d8Plus3Slashing := game.DamageRoll{
 		Die:   8,
+		Count: 1,
 		Bonus: 3,
-	}
-
-	d6Plus1Piercing := game.DamageRoll{
-		Die:   6,
-		Bonus: 1,
+		Type:  game.Slashing,
 	}
 
 	// Create combatants
-	warrior := game.NewEntity("Warrior", 30, 15)
+	warrior := game.NewEntity("Warrior", 30, 15, game.GoodGuys)
 	warriorAttack := game.BaseAttack{
 		Damage: []game.DamageRoll{d8Plus3Slashing},
 		Bonus:  5,
 	}
 	warrior.AddActionCard(game.NewStrikeCard(warriorAttack))
-	goblin := game.NewEntity("Goblin", 20, 13)
-	goblinAttack := game.BaseAttack{
-		Damage: []game.DamageRoll{d6Plus1Piercing},
-		Bonus:  3,
-	}
-	goblin.AddActionCard(game.NewStrikeCard(goblinAttack))
+	goblin1 := makeAGoblin("Goblin 1")
+	goblin2 := makeAGoblin("Goblin 2")
+	goblin3 := makeAGoblin("Goblin 3")
+	goblin4 := makeAGoblin("Goblin 4")
 	game.RegisterTrigger(items.ShieldBlock{Owner: warrior}, "BEFORE_DAMAGE")
 	spawns := []game.Spawn{
-		{Unit: goblin, Coordinates: [2]int{0, 0}},
-		{Unit: warrior, Coordinates: [2]int{1, 0}},
+		{Unit: goblin1, Coordinates: [2]int{0, 1}},
+		{Unit: goblin2, Coordinates: [2]int{2, 1}},
+		{Unit: warrior, Coordinates: [2]int{1, 1}},
+		{Unit: goblin3, Coordinates: [2]int{1, 0}},
+		{Unit: goblin4, Coordinates: [2]int{1, 2}},
 	}
 
 	// Start the combat loop
 	game.StartCombat(spawns, 10, 10)
+}
+
+func makeAGoblin(name string) *game.Entity {
+	goblin := game.NewEntity(name, 20, 13, game.BadGuys)
+	goblinAttack := game.BaseAttack{
+		Damage: []game.DamageRoll{{Die: 6, Count: 1, Bonus: 1, Type: game.Piercing}},
+		Bonus:  3,
+	}
+	goblin.AddActionCard(game.NewStrikeCard(goblinAttack))
+	return goblin
 }

@@ -86,13 +86,20 @@ func (gs *GameState) getInitiativeOrder() []string {
 
 // IsCombatOver checks if the combat has ended
 func (gs *GameState) IsCombatOver() bool {
-	livingEntities := 0
+	var faction Faction
+	firstLivingEntity := true
+
 	for _, e := range gs.Entities {
 		if e.IsAlive() {
-			livingEntities++
+			if firstLivingEntity {
+				faction = e.Faction
+				firstLivingEntity = false
+			} else if e.Faction != faction {
+				return false
+			}
 		}
 	}
-	return livingEntities <= 1
+	return true
 }
 
 // GetCurrentTurnEntity returns the entity whose turn it is

@@ -65,6 +65,9 @@ func Deal(gs *GameState, damage Damage) {
 	totalDamage := 0
 	for _, dr := range damage.Amount {
 		dealDamage := dr.Amount - damage.Blocked
+		if dealDamage < 0 {
+			dealDamage = 0
+		}
 		totalDamage += dealDamage
 		applyDamage(damage, dealDamage)
 	}
