@@ -49,7 +49,7 @@ func findNearestEnemy(gs *GameState, e *Entity) *Entity {
 	var closest *Entity
 	minDistance := math.MaxInt
 
-	for _, other := range gs.Entities {
+	for _, other := range gs.Initiative {
 		if other == e || !other.IsAlive() || other.Faction == e.Faction {
 			continue
 		}

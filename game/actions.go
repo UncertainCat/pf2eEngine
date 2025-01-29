@@ -27,7 +27,7 @@ type AfterAttackStep struct {
 func NewBeforeAttackStep(attack *Attack) BeforeAttackStep {
 	return BeforeAttackStep{
 		BaseStep: BaseStep{
-			stepType: BeforeAttack,
+			StepType: BeforeAttack,
 			metadata: map[string]interface{}{
 				"Attacker": attack.Attacker.Name,
 				"Defender": attack.Defender.Name,
@@ -40,7 +40,7 @@ func NewBeforeAttackStep(attack *Attack) BeforeAttackStep {
 func NewAfterAttackStep(attack *Attack) AfterAttackStep {
 	return AfterAttackStep{
 		BaseStep: BaseStep{
-			stepType: AfterAttack,
+			StepType: AfterAttack,
 			metadata: map[string]interface{}{
 				"Attacker": attack.Attacker.Name,
 				"Defender": attack.Defender.Name,
@@ -68,7 +68,7 @@ type Action struct {
 	Type        ActionType
 	Cost        int
 	Description string
-	Perform     func(gs *GameState, actor *Entity)
+	perform     func(gs *GameState, actor *Entity)
 }
 
 type StartActionStep struct {
@@ -87,7 +87,7 @@ func EndTurnAction(gs *GameState, actor *Entity) Action {
 	return Action{
 		Name:    "End Turn",
 		Type:    EndOfTurn,
-		Perform: func(gs *GameState, actor *Entity) {},
+		perform: func(gs *GameState, actor *Entity) {},
 	}
 }
 
@@ -103,15 +103,15 @@ func ExecuteAction(gs *GameState, actor *Entity, action Action) {
 		actor.Name, action.Cost, actor.ActionsRemaining)
 
 	executeStep(gs, StartActionStep{
-		BaseStep: BaseStep{stepType: StartTurn},
+		BaseStep: BaseStep{StepType: StartTurn},
 		Action:   action,
 		Actor:    actor,
 	}, fmt.Sprintf("%s starts the action: %s.", actor.Name, action.Name))
 
-	action.Perform(gs, actor)
+	action.perform(gs, actor)
 
 	executeStep(gs, EndActionStep{
-		BaseStep: BaseStep{stepType: EndTurn},
+		BaseStep: BaseStep{StepType: EndTurn},
 		Action:   action,
 		Actor:    actor,
 	}, fmt.Sprintf("%s completed the action: %s.", actor.Name, action.Name))

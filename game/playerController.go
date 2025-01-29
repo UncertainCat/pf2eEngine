@@ -48,7 +48,7 @@ func (p *PlayerController) AddAction(c PlayerCommand) error {
 }
 
 func (p *PlayerController) AddActionWithCard(entityID uuid.UUID, actionCardID uuid.UUID, params map[string]interface{}) error {
-	entity := findEntityByID(p.GameState.Entities, entityID)
+	entity := findEntityByID(p.GameState.Initiative, entityID)
 	if entity == nil {
 		return fmt.Errorf("entity not found")
 	}

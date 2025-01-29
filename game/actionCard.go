@@ -43,11 +43,11 @@ type ActionCard struct {
 	Name            string
 	Type            ActionCardType
 	Description     string
-	ActionGenerator func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error)
+	actionGenerator func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error)
 }
 
 func (ac ActionCard) GenerateAction(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
-	action, err := ac.ActionGenerator(gs, actor, params)
+	action, err := ac.actionGenerator(gs, actor, params)
 	if err != nil {
 		fmt.Printf("Failed to generate action: %v\n Params: %v\n", err, params)
 		return Action{}, err
@@ -57,7 +57,7 @@ func (ac ActionCard) GenerateAction(gs *GameState, actor *Entity, params map[str
 
 func getSingleTarget(gs *GameState, actor *Entity, criteria []TargetCriterion, params map[string]interface{}) (*Entity, error) {
 	targetID := params[TargetID].(uuid.UUID)
-	target := findEntityByID(gs.Entities, targetID)
+	target := findEntityByID(gs.Initiative, targetID)
 	if target == nil {
 		return nil, errors.New("target not found")
 	}
@@ -74,7 +74,7 @@ func getTarget(gs *GameState, params map[string]interface{}) (*Entity, error) {
 	if !err {
 		return nil, errors.New("targetID not found in params")
 	}
-	target := findEntityByID(gs.Entities, targetID)
+	target := findEntityByID(gs.Initiative, targetID)
 	if target == nil {
 		return nil, errors.New("target entity does not exist")
 	}
@@ -100,7 +100,7 @@ func Range(maxDistance int) TargetCriterion {
 func IsAlive() TargetCriterion {
 	return func(gs *GameState, actor *Entity, params map[string]interface{}) error {
 		targetId, ok := params[TargetID].(uuid.UUID)
-		target := findEntityByID(gs.Entities, targetId)
+		target := findEntityByID(gs.Initiative, targetId)
 		if !ok {
 			return errors.New("target not found")
 		}
@@ -123,7 +123,7 @@ func NewSingleTargetActionCard(
 		Name:        name,
 		Type:        actionType,
 		Description: description,
-		ActionGenerator: func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
+		actionGenerator: func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
 			target, err := getSingleTarget(gs, actor, criteria, params)
 			if err != nil {
 				return Action{}, err
@@ -131,7 +131,7 @@ func NewSingleTargetActionCard(
 			return Action{
 				Name: name,
 				Cost: actionType.ToCost(params),
-				Perform: func(gs *GameState, actor *Entity) {
+				perform: func(gs *GameState, actor *Entity) {
 					actionFunc(gs, actor, target)
 				},
 			}, nil

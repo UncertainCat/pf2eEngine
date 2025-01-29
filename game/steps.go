@@ -21,12 +21,12 @@ type Step interface {
 }
 
 type BaseStep struct {
-	stepType StepType
+	StepType StepType
 	metadata map[string]interface{}
 }
 
 func (s BaseStep) Type() StepType {
-	return s.stepType
+	return s.StepType
 }
 
 func (s BaseStep) Metadata() map[string]interface{} {
@@ -58,6 +58,7 @@ func RegisterTrigger(trigger Trigger, t StepType) {
 
 func executeStep(gs *GameState, step Step, logMessage string) {
 	gs.LogEvent(logMessage, step.Metadata())
+	gs.StepHistory.AddStep(step)
 
 	if triggersForStep, ok := triggers[step.Type()]; ok {
 		sort.Slice(triggersForStep, func(i, j int) bool {

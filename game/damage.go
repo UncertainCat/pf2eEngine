@@ -33,7 +33,7 @@ type AfterDamageStep struct {
 func NewBeforeDamageStep(damage *Damage) BeforeDamageStep {
 	return BeforeDamageStep{
 		BaseStep: BaseStep{
-			stepType: BeforeDamage,
+			StepType: BeforeDamage,
 			metadata: map[string]interface{}{
 				"Source": damage.Source.Name,
 				"Target": damage.Target.Name,
@@ -47,7 +47,7 @@ func NewBeforeDamageStep(damage *Damage) BeforeDamageStep {
 func NewAfterDamageStep(damage *Damage) AfterDamageStep {
 	return AfterDamageStep{
 		BaseStep: BaseStep{
-			stepType: AfterDamage,
+			StepType: AfterDamage,
 			metadata: map[string]interface{}{
 				"Source":  damage.Source.Name,
 				"Target":  damage.Target.Name,

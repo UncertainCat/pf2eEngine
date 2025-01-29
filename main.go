@@ -1,8 +1,8 @@
-// main.go
 package main
 
 import (
 	"math/rand"
+	"pf2eEngine/controllerhttp"
 	"pf2eEngine/game"
 	"pf2eEngine/items"
 	"time"
@@ -38,8 +38,19 @@ func main() {
 		{Unit: goblin4, Coordinates: [2]int{1, 2}},
 	}
 
-	// Start the combat loop
-	game.StartCombat(spawns, 10, 10)
+	// Initialize game state
+	gameState := game.NewGameState(spawns, 10, 10)
+
+	// Initialize player controller
+	playerController := game.NewPlayerController(gameState)
+
+	// Initialize and start the HTTP server
+	server := controllerhttp.NewControllerServer(8080, playerController)
+	server.GameState = game.StartCombat(spawns, 10, 10)
+	server.Start()
+
+	// Prevent the main function from exiting
+	select {}
 }
 
 func makeAGoblin(name string) *game.Entity {
