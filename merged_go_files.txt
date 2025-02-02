@@ -1,45 +1,22 @@
 
-==== File: controllerhttp\server.go ====
+==== File: controllerhttp\httpHandlers.go ====
 
 package controllerhttp
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
 	"net/http"
-	"pf2eEngine/game"
 	"strconv"
 )
 
-// ControllerServer handles HTTP requests for player-controlled entities
-type ControllerServer struct {
-	Port       int
-	Controller *game.PlayerController
-	GameState  *game.GameState
-}
-
-// NewControllerServer initializes a ControllerServer
-func NewControllerServer(port int, controller *game.PlayerController) *ControllerServer {
-	return &ControllerServer{
-		Port:       port,
-		Controller: controller,
-	}
-}
-
-type CommandRequest struct {
-	EntityID     uuid.UUID              `json:"entity_id"`
-	ActionCardId uuid.UUID              `json:"action_card_id"`
-	Params       map[string]interface{} `json:"params"`
-}
-
-// HTTPHandler processes incoming HTTP requests and queues actions
+// HTTPHandler processes incoming HTTP POST requests and queues actions.
 func (cs *ControllerServer) HTTPHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST requests are allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	command := CommandRequest{}
+	var command CommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -53,7 +30,7 @@ func (cs *ControllerServer) HTTPHandler(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 }
 
-// StepsHandler processes GET requests to return game steps starting from a given index
+// StepsHandler processes GET requests to return game steps starting from a given index.
 func (cs *ControllerServer) StepsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Only GET requests are allowed", http.StatusMethodNotAllowed)
@@ -89,11 +66,70 @@ func (cs *ControllerServer) StepsHandler(w http.ResponseWriter, r *http.Request)
 	w.Write(response)
 }
 
-// Start starts the HTTP server
+==== End of controllerhttp\httpHandlers.go ====
+
+
+==== File: controllerhttp\server.go ====
+
+package controllerhttp
+
+import (
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"pf2eEngine/game"
+)
+
+// ControllerServer handles HTTP requests and WebSocket connections for player-controlled entities.
+type ControllerServer struct {
+	Port       int
+	Controller *game.PlayerController
+	GameState  *game.GameState
+
+	// wsClients holds all active WebSocket connections.
+	wsClients map[*websocket.Conn]bool
+	// wsBroadcast is a channel for broadcasting messages to all WebSocket clients.
+	wsBroadcast chan []byte
+}
+
+// NewControllerServer initializes a ControllerServer.
+func NewControllerServer(port int, controller *game.PlayerController) *ControllerServer {
+	return &ControllerServer{
+		Port:        port,
+		Controller:  controller,
+		wsClients:   make(map[*websocket.Conn]bool),
+		wsBroadcast: make(chan []byte),
+	}
+}
+
+// CommandRequest represents a command sent by HTTP or WebSocket clients.
+type CommandRequest struct {
+	EntityID     uuid.UUID              `json:"entity_id"`
+	ActionCardId uuid.UUID              `json:"action_card_id"`
+	Params       map[string]interface{} `json:"params"`
+}
+
+==== End of controllerhttp\server.go ====
+
+
+==== File: controllerhttp\serverStart.go ====
+
+package controllerhttp
+
+import (
+	"fmt"
+	"net/http"
+)
+
+// Start starts the HTTP server and registers both HTTP and WebSocket handlers.
 func (cs *ControllerServer) Start() {
 	http.HandleFunc("/action", cs.HTTPHandler)
 	http.HandleFunc("/steps", cs.StepsHandler)
-	fmt.Printf("HTTP server running on port %d\n", cs.Port)
+	http.HandleFunc("/ws", cs.WSHandler)
+	fmt.Printf("Server running on port %d\n", cs.Port)
+
+	// Start the broadcast goroutine.
+	go cs.broadcastUpdates()
+
 	go func() {
 		if err := http.ListenAndServe(fmt.Sprintf(":%d", cs.Port), nil); err != nil {
 			fmt.Printf("HTTP server error: %v\n", err)
@@ -101,7 +137,88 @@ func (cs *ControllerServer) Start() {
 	}()
 }
 
-==== End of controllerhttp\server.go ====
+==== End of controllerhttp\serverStart.go ====
+
+
+==== File: controllerhttp\wsHandlers.go ====
+
+package controllerhttp
+
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/gorilla/websocket"
+	"net/http"
+)
+
+// upgrader is used to upgrade HTTP connections to WebSocket connections.
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	// For simplicity, allow all origins. In production, you should validate this.
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// WSHandler upgrades the HTTP connection to a WebSocket and listens for commands.
+func (cs *ControllerServer) WSHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Printf("WebSocket upgrade error: %v\n", err)
+		return
+	}
+	// Register the new client.
+	cs.wsClients[conn] = true
+	fmt.Println("New WebSocket client connected")
+
+	// Listen for incoming messages.
+	for {
+		messageType, message, err := conn.ReadMessage()
+		if err != nil {
+			fmt.Printf("WebSocket read error: %v\n", err)
+			delete(cs.wsClients, conn)
+			break
+		}
+
+		// Only process text messages.
+		if messageType != websocket.TextMessage {
+			continue
+		}
+
+		var command CommandRequest
+		if err := json.Unmarshal(message, &command); err != nil {
+			errMsg := "Invalid JSON"
+			conn.WriteMessage(websocket.TextMessage, []byte(errMsg))
+			continue
+		}
+
+		err = cs.Controller.AddActionWithCard(command.EntityID, command.ActionCardId, command.Params)
+		if err != nil {
+			conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+			continue
+		}
+
+		successMsg := "Action queued successfully"
+		conn.WriteMessage(websocket.TextMessage, []byte(successMsg))
+	}
+}
+
+// broadcastUpdates listens on wsBroadcast and sends incoming messages to all connected WebSocket clients.
+func (cs *ControllerServer) broadcastUpdates() {
+	for {
+		msg := <-cs.wsBroadcast
+		for client := range cs.wsClients {
+			if err := client.WriteMessage(websocket.TextMessage, msg); err != nil {
+				fmt.Printf("WebSocket write error: %v\n", err)
+				client.Close()
+				delete(cs.wsClients, client)
+			}
+		}
+	}
+}
+
+==== End of controllerhttp\wsHandlers.go ====
 
 
 ==== File: game\actionCard.go ====
