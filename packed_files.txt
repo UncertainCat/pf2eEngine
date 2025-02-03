@@ -1,0 +1,1741 @@
+====== FILE-START: controllerhttp\httpHandlers.go ======
+package controllerhttp
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+)
+
+// HTTPHandler processes incoming HTTP POST requests and queues actions.
+func (cs *ControllerServer) HTTPHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST requests are allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var command CommandRequest
+	if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	err := cs.Controller.AddActionWithCard(command.EntityID, command.ActionCardId, command.Params)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// StepsHandler processes GET requests to return game steps starting from a given index.
+func (cs *ControllerServer) StepsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Only GET requests are allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	indexStr := r.URL.Query().Get("index")
+	if indexStr == "" {
+		http.Error(w, "Index query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	index, err := strconv.Atoi(indexStr)
+	if err != nil || index < 0 {
+		http.Error(w, "Invalid index", http.StatusBadRequest)
+		return
+	}
+
+	if index >= len(cs.GameState.StepHistory.Steps) {
+		http.Error(w, "Index out of range", http.StatusBadRequest)
+		return
+	}
+
+	steps := cs.GameState.StepHistory.Steps[index:]
+	response, err := json.Marshal(steps)
+	if err != nil {
+		fmt.Printf("Error marshaling steps: %v\n", err)
+		http.Error(w, "Failed to marshal steps", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(response)
+}
+====== FILE-END: controllerhttp\httpHandlers.go ======
+====== FILE-START: controllerhttp\server.go ======
+package controllerhttp
+
+import (
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"pf2eEngine/game"
+)
+
+// ControllerServer handles HTTP requests and WebSocket connections for player-controlled entities.
+type ControllerServer struct {
+	Port       int
+	Controller *game.PlayerController
+	GameState  *game.GameState
+
+	// wsClients holds all active WebSocket connections.
+	wsClients map[*websocket.Conn]bool
+	// wsBroadcast is a channel for broadcasting messages to all WebSocket clients.
+	wsBroadcast chan []byte
+}
+
+// NewControllerServer initializes a ControllerServer.
+func NewControllerServer(port int, controller *game.PlayerController) *ControllerServer {
+	return &ControllerServer{
+		Port:        port,
+		Controller:  controller,
+		wsClients:   make(map[*websocket.Conn]bool),
+		wsBroadcast: make(chan []byte),
+	}
+}
+
+// CommandRequest represents a command sent by HTTP or WebSocket clients.
+type CommandRequest struct {
+	EntityID     uuid.UUID              `json:"entity_id"`
+	ActionCardId uuid.UUID              `json:"action_card_id"`
+	Params       map[string]interface{} `json:"params"`
+}
+====== FILE-END: controllerhttp\server.go ======
+====== FILE-START: controllerhttp\serverStart.go ======
+package controllerhttp
+
+import (
+	"fmt"
+	"net/http"
+)
+
+// Start starts the HTTP server and registers both HTTP and WebSocket handlers.
+func (cs *ControllerServer) Start() {
+	http.HandleFunc("/action", cs.HTTPHandler)
+	http.HandleFunc("/steps", cs.StepsHandler)
+	http.HandleFunc("/ws", cs.WSHandler)
+	fmt.Printf("Server running on port %d\n", cs.Port)
+
+	// Start the broadcast goroutine.
+	go cs.broadcastUpdates()
+
+	go func() {
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", cs.Port), nil); err != nil {
+			fmt.Printf("HTTP server error: %v\n", err)
+		}
+	}()
+}
+====== FILE-END: controllerhttp\serverStart.go ======
+====== FILE-START: controllerhttp\wsHandlers.go ======
+package controllerhttp
+
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/gorilla/websocket"
+	"net/http"
+)
+
+// upgrader is used to upgrade HTTP connections to WebSocket connections.
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	// For simplicity, allow all origins. In production, you should validate this.
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// WSHandler upgrades the HTTP connection to a WebSocket and listens for commands.
+func (cs *ControllerServer) WSHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Printf("WebSocket upgrade error: %v\n", err)
+		return
+	}
+	// Register the new client.
+	cs.wsClients[conn] = true
+	fmt.Println("New WebSocket client connected")
+
+	// Listen for incoming messages.
+	for {
+		messageType, message, err := conn.ReadMessage()
+		if err != nil {
+			fmt.Printf("WebSocket read error: %v\n", err)
+			delete(cs.wsClients, conn)
+			break
+		}
+
+		// Only process text messages.
+		if messageType != websocket.TextMessage {
+			continue
+		}
+
+		var command CommandRequest
+		if err := json.Unmarshal(message, &command); err != nil {
+			errMsg := "Invalid JSON"
+			conn.WriteMessage(websocket.TextMessage, []byte(errMsg))
+			continue
+		}
+
+		err = cs.Controller.AddActionWithCard(command.EntityID, command.ActionCardId, command.Params)
+		if err != nil {
+			conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+			continue
+		}
+
+		successMsg := "Action queued successfully"
+		conn.WriteMessage(websocket.TextMessage, []byte(successMsg))
+	}
+}
+
+// broadcastUpdates listens on wsBroadcast and sends incoming messages to all connected WebSocket clients.
+func (cs *ControllerServer) broadcastUpdates() {
+	for {
+		msg := <-cs.wsBroadcast
+		for client := range cs.wsClients {
+			if err := client.WriteMessage(websocket.TextMessage, msg); err != nil {
+				fmt.Printf("WebSocket write error: %v\n", err)
+				client.Close()
+				delete(cs.wsClients, client)
+			}
+		}
+	}
+}
+====== FILE-END: controllerhttp\wsHandlers.go ======
+====== FILE-START: game\actionCard.go ======
+package game
+
+import (
+	"errors"
+	"fmt"
+	"github.com/google/uuid"
+)
+
+type ActionCardType string
+
+const (
+	OneActionCard      ActionCardType = "ONE_ACTION"
+	TwoActionCard      ActionCardType = "TWO_ACTION"
+	ThreeActionCard    ActionCardType = "THREE_ACTION"
+	VariableActionCard ActionCardType = "VARIABLE_ACTION"
+	FreeActionCard     ActionCardType = "FREE_ACTION"
+)
+
+const (
+	ActionCost = "action_cost"
+	TargetID   = "targetID"
+)
+
+func (a ActionCardType) ToCost(params map[string]interface{}) int {
+	switch a {
+	case OneActionCard:
+		return 1
+	case TwoActionCard:
+		return 2
+	case ThreeActionCard:
+		return 3
+	case VariableActionCard:
+		return params[ActionCost].(int)
+	case FreeActionCard:
+		return 0
+	default:
+		return 0
+	}
+}
+
+type ActionCard struct {
+	ID              uuid.UUID
+	Name            string
+	Type            ActionCardType
+	Description     string
+	actionGenerator func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error)
+}
+
+func (ac ActionCard) GenerateAction(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
+	action, err := ac.actionGenerator(gs, actor, params)
+	if err != nil {
+		fmt.Printf("Failed to generate action: %v\n Params: %v\n", err, params)
+		return Action{}, err
+	}
+	return action, nil
+}
+
+func getSingleTarget(gs *GameState, actor *Entity, criteria []TargetCriterion, params map[string]interface{}) (*Entity, error) {
+	targetID := params[TargetID].(uuid.UUID)
+	target := findEntityByID(gs.Initiative, targetID)
+	if target == nil {
+		return nil, errors.New("target not found")
+	}
+	for _, criterion := range criteria {
+		if err := criterion(gs, actor, params); err != nil {
+			return nil, err
+		}
+	}
+	return target, nil
+}
+
+func getTarget(gs *GameState, params map[string]interface{}) (*Entity, error) {
+	targetID, err := params[TargetID].(uuid.UUID)
+	if !err {
+		return nil, errors.New("targetID not found in params")
+	}
+	target := findEntityByID(gs.Initiative, targetID)
+	if target == nil {
+		return nil, errors.New("target entity does not exist")
+	}
+	return target, nil
+}
+
+type TargetCriterion func(gs *GameState, actor *Entity, params map[string]interface{}) error
+
+func Range(maxDistance int) TargetCriterion {
+	return func(gs *GameState, actor *Entity, params map[string]interface{}) error {
+		target, err := getTarget(gs, params)
+		if err != nil {
+			return err
+		}
+		gs.Grid.GetEntityPosition(actor)
+		if gs.Grid.CalculateDistanceBetweenEntities(target, actor) > maxDistance {
+			return fmt.Errorf("target is out of range (max: %d)", maxDistance)
+		}
+		return nil
+	}
+}
+
+func IsAlive() TargetCriterion {
+	return func(gs *GameState, actor *Entity, params map[string]interface{}) error {
+		targetId, ok := params[TargetID].(uuid.UUID)
+		target := findEntityByID(gs.Initiative, targetId)
+		if !ok {
+			return errors.New("target not found")
+		}
+		if !target.IsAlive() {
+			return errors.New("target is not alive")
+		}
+		return nil
+	}
+}
+
+func NewSingleTargetActionCard(
+	name string,
+	actionType ActionCardType,
+	description string,
+	criteria []TargetCriterion,
+	actionFunc func(gs *GameState, actor *Entity, target *Entity),
+) *ActionCard {
+	return &ActionCard{
+		ID:          uuid.New(),
+		Name:        name,
+		Type:        actionType,
+		Description: description,
+		actionGenerator: func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
+			target, err := getSingleTarget(gs, actor, criteria, params)
+			if err != nil {
+				return Action{}, err
+			}
+			return Action{
+				Name: name,
+				Cost: actionType.ToCost(params),
+				perform: func(gs *GameState, actor *Entity) {
+					actionFunc(gs, actor, target)
+				},
+			}, nil
+		},
+	}
+}
+
+func NewStrikeCard(attack BaseAttack) *ActionCard {
+	return NewSingleTargetActionCard(
+		"Strike",
+		OneActionCard,
+		"Make a melee strike against a target within range 5.",
+		[]TargetCriterion{
+			IsAlive(),
+			Range(5),
+		},
+		func(gs *GameState, actor *Entity, target *Entity) {
+			PerformAttack(gs, attack, actor, target)
+		},
+	)
+}
+====== FILE-END: game\actionCard.go ======
+====== FILE-START: game\actions.go ======
+package game
+
+import (
+	"fmt"
+	dice "pf2eEngine/util"
+)
+
+type Attack struct {
+	Attacker *Entity
+	Defender *Entity
+	Roll     int
+	Bonus    int
+	Result   int
+	Degree   DegreeOfSuccess
+}
+
+type BeforeAttackStep struct {
+	BaseStep
+	Attack *Attack
+}
+
+type AfterAttackStep struct {
+	BaseStep
+	Attack *Attack
+}
+
+func NewBeforeAttackStep(attack *Attack) BeforeAttackStep {
+	return BeforeAttackStep{
+		BaseStep: BaseStep{
+			StepType: BeforeAttack,
+			metadata: map[string]interface{}{
+				"Attacker": attack.Attacker.Name,
+				"Defender": attack.Defender.Name,
+			},
+		},
+		Attack: attack,
+	}
+}
+
+func NewAfterAttackStep(attack *Attack) AfterAttackStep {
+	return AfterAttackStep{
+		BaseStep: BaseStep{
+			StepType: AfterAttack,
+			metadata: map[string]interface{}{
+				"Attacker": attack.Attacker.Name,
+				"Defender": attack.Defender.Name,
+				"Result":   attack.Result,
+				"Degree":   attack.Degree,
+			},
+		},
+		Attack: attack,
+	}
+}
+
+// ActionType defines the category of an action
+type ActionType string
+
+const (
+	SingleAction ActionType = "SINGLE_ACTION"
+	FreeAction   ActionType = "FREE_ACTION"
+	Activity     ActionType = "ACTIVITY"
+	Reaction     ActionType = "REACTION"
+	EndOfTurn    ActionType = "END_OF_TURN"
+)
+
+type Action struct {
+	Name        string
+	Type        ActionType
+	Cost        int
+	Description string
+	perform     func(gs *GameState, actor *Entity)
+}
+
+type StartActionStep struct {
+	BaseStep
+	Action Action
+	Actor  *Entity
+}
+
+type EndActionStep struct {
+	BaseStep
+	Action Action
+	Actor  *Entity
+}
+
+func EndTurnAction(gs *GameState, actor *Entity) Action {
+	return Action{
+		Name:    "End Turn",
+		Type:    EndOfTurn,
+		perform: func(gs *GameState, actor *Entity) {},
+	}
+}
+
+func ExecuteAction(gs *GameState, actor *Entity, action Action) {
+	if actor.ActionsRemaining < action.Cost {
+		fmt.Printf("%s does not have enough actions to perform %s. Actions remaining: %d, action cost: %d.\n",
+			actor.Name, action.Name, actor.ActionsRemaining, action.Cost)
+		return
+	}
+
+	actor.SpendAction(action.Cost)
+	fmt.Printf("%s used %d actions. Actions remaining: %d.\n",
+		actor.Name, action.Cost, actor.ActionsRemaining)
+
+	executeStep(gs, StartActionStep{
+		BaseStep: BaseStep{StepType: StartTurn},
+		Action:   action,
+		Actor:    actor,
+	}, fmt.Sprintf("%s starts the action: %s.", actor.Name, action.Name))
+
+	action.perform(gs, actor)
+
+	executeStep(gs, EndActionStep{
+		BaseStep: BaseStep{StepType: EndTurn},
+		Action:   action,
+		Actor:    actor,
+	}, fmt.Sprintf("%s completed the action: %s.", actor.Name, action.Name))
+}
+
+// PerformAttack encapsulates the full attack logic
+func PerformAttack(gs *GameState, baseAttack BaseAttack, attacker *Entity, defender *Entity) {
+	attackerPos := gs.Grid.GetEntityPosition(attacker)
+	defenderPos := gs.Grid.GetEntityPosition(defender)
+
+	if !gs.Grid.AreAdjacent(attackerPos, defenderPos) {
+		fmt.Printf("%s cannot attack %s; they are not adjacent.\n", attacker.Name, defender.Name)
+		return
+	}
+
+	roll := dice.Roll(20)
+	attack := &Attack{
+		Attacker: attacker,
+		Defender: defender,
+		Roll:     roll,
+		Bonus:    baseAttack.Bonus - attacker.MapCounter*5,
+		Result:   roll + baseAttack.Bonus - attacker.MapCounter*5,
+	}
+	attack.Degree = calculateDegreeOfSuccess(roll, attack.Result, defender.AC)
+
+	details := fmt.Sprintf(
+		"Attack Details:\n\tAttacker: %s\n\tDefender: %s\n\tRoll: %d\n\tBonus: %d\n\tResult: %d\n\tDefender AC: %d\n\tDegree: %v",
+		attacker.Name, defender.Name, roll, attack.Bonus, attack.Result, defender.AC, attack.Degree.String(),
+	)
+
+	damageRoll := baseAttack.RollDamage()
+
+	damage := Damage{Source: attacker, Target: defender, Amount: damageRoll}
+	switch attack.Degree {
+	case CriticalSuccess:
+		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has critically hit %s! Details:\n%s", attacker.Name, defender.Name, details))
+		Deal(gs, damage.Double())
+	case Success:
+		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has hit %s. Details:\n%s", attacker.Name, defender.Name, details))
+		Deal(gs, damage)
+	case Failure:
+		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has missed %s. Details:\n%s", attacker.Name, defender.Name, details))
+	case CriticalFailure:
+		executeStep(gs, NewBeforeAttackStep(attack), fmt.Sprintf("%s has critically missed %s! Details:\n%s", attacker.Name, defender.Name, details))
+	}
+
+	executeStep(gs, NewAfterAttackStep(attack), fmt.Sprintf("%s has finished attacking %s.", attacker.Name, defender.Name))
+	attacker.MapCounter++
+}
+====== FILE-END: game\actions.go ======
+====== FILE-START: game\aiController.go ======
+package game
+
+import (
+	"fmt"
+	"math"
+)
+
+// AIController implements basic AI logic for entities
+type AIController struct{}
+
+func NewAIController() AIController {
+	return AIController{}
+}
+
+func (a AIController) NextAction(gs *GameState, e *Entity) Action {
+	target := findNearestEnemy(gs, e)
+	if target == nil || e.ActionsRemaining == 0 {
+		return EndTurnAction(gs, e)
+	}
+	strikes := getStrikeCards(e)
+	if len(strikes) == 0 {
+		fmt.Println("No strike cards available for", e.Name)
+		return EndTurnAction(gs, e)
+	}
+	params := map[string]interface{}{}
+	params["targetID"] = target.Id
+	action, err := strikes[0].GenerateAction(gs, e, params)
+	if err != nil {
+		return EndTurnAction(gs, e)
+	}
+	return action
+}
+
+func getStrikeCards(e *Entity) []*ActionCard {
+	cards := e.ActionCards
+	// Filter out all non-strike cards
+	var strikeCards []*ActionCard
+	for _, card := range cards {
+		if card.Name == "Strike" {
+			strikeCards = append(strikeCards, card)
+		}
+	}
+	return strikeCards
+}
+
+// findNearestEntity locates the closest living entity to the given entity
+func findNearestEnemy(gs *GameState, e *Entity) *Entity {
+	currentPos := gs.Grid.GetEntityPosition(e)
+	var closest *Entity
+	minDistance := math.MaxInt
+
+	for _, other := range gs.Initiative {
+		if other == e || !other.IsAlive() || other.Faction == e.Faction {
+			continue
+		}
+		otherPos := gs.Grid.GetEntityPosition(other)
+		distance := gs.Grid.CalculateDistance(currentPos, otherPos)
+		if distance < minDistance {
+			closest = other
+			minDistance = distance
+		}
+	}
+	return closest
+}
+====== FILE-END: game\aiController.go ======
+====== FILE-START: game\attributes.go ======
+package game
+
+// Attributes represent additional attributes for an entity
+// This can be extended for more complex mechanics
+
+type Attributes struct {
+	Strength     int
+	Dexterity    int
+	Constitution int
+	Intelligence int
+	Wisdom       int
+	Charisma     int
+}
+
+// NewAttributes creates a new Attributes instance with default values
+func NewAttributes(strength, dexterity, constitution, intelligence, wisdom, charisma int) *Attributes {
+	return &Attributes{
+		Strength:     strength,
+		Dexterity:    dexterity,
+		Constitution: constitution,
+		Intelligence: intelligence,
+		Wisdom:       wisdom,
+		Charisma:     charisma,
+	}
+}
+
+// ApplyModifiers adjusts attributes dynamically based on external factors
+func (a *Attributes) ApplyModifiers(modifiers map[string]int) {
+	if mod, ok := modifiers["Strength"]; ok {
+		a.Strength += mod
+	}
+	if mod, ok := modifiers["Dexterity"]; ok {
+		a.Dexterity += mod
+	}
+	if mod, ok := modifiers["Constitution"]; ok {
+		a.Constitution += mod
+	}
+	if mod, ok := modifiers["Intelligence"]; ok {
+		a.Intelligence += mod
+	}
+	if mod, ok := modifiers["Wisdom"]; ok {
+		a.Wisdom += mod
+	}
+	if mod, ok := modifiers["Charisma"]; ok {
+		a.Charisma += mod
+	}
+}
+====== FILE-END: game\attributes.go ======
+====== FILE-START: game\controller.go ======
+package game
+
+// Controller interface for entity controllers
+type Controller interface {
+	NextAction(gs *GameState, entity *Entity) Action
+}
+====== FILE-END: game\controller.go ======
+====== FILE-START: game\damage.go ======
+package game
+
+import (
+	"fmt"
+	dice "pf2eEngine/util"
+)
+
+type Damage struct {
+	Source  *Entity
+	Target  *Entity
+	Amount  map[DamageType]DamageAmount
+	Blocked int
+	Taken   int
+}
+
+func (d Damage) Double() Damage {
+	for k, v := range d.Amount {
+		d.Amount[k] = DamageAmount{Amount: v.Amount * 2, Type: v.Type}
+	}
+	return d
+}
+
+type BeforeDamageStep struct {
+	BaseStep
+	Damage *Damage
+}
+
+type AfterDamageStep struct {
+	BaseStep
+	Damage *Damage
+}
+
+func NewBeforeDamageStep(damage *Damage) BeforeDamageStep {
+	return BeforeDamageStep{
+		BaseStep: BaseStep{
+			StepType: BeforeDamage,
+			metadata: map[string]interface{}{
+				"Source": damage.Source.Name,
+				"Target": damage.Target.Name,
+				"Amount": damage.Amount,
+			},
+		},
+		Damage: damage,
+	}
+}
+
+func NewAfterDamageStep(damage *Damage) AfterDamageStep {
+	return AfterDamageStep{
+		BaseStep: BaseStep{
+			StepType: AfterDamage,
+			metadata: map[string]interface{}{
+				"Source":  damage.Source.Name,
+				"Target":  damage.Target.Name,
+				"Amount":  damage.Amount,
+				"Blocked": damage.Blocked,
+				"Taken":   damage.Taken,
+			},
+		},
+		Damage: damage,
+	}
+}
+
+func Deal(gs *GameState, damage Damage) {
+	executeStep(gs, NewBeforeDamageStep(&damage), fmt.Sprintf("%s is about to deal damage to %s.", damage.Source.Name, damage.Target.Name))
+	totalDamage := 0
+	for _, dr := range damage.Amount {
+		dealDamage := dr.Amount - damage.Blocked
+		if dealDamage < 0 {
+			dealDamage = 0
+		}
+		totalDamage += dealDamage
+		applyDamage(damage, dealDamage)
+	}
+	damage.Taken = totalDamage
+
+	executeStep(gs, NewAfterDamageStep(&damage), fmt.Sprintf("%s dealt %d damage to %s.", damage.Source.Name, damage.Taken, damage.Target.Name))
+}
+
+func applyDamage(damage Damage, totalDamage int) {
+	damage.Target.TakeDamage(totalDamage)
+}
+
+type DamageType string
+
+const (
+	Bludgeoning DamageType = "BLUDGEONING"
+	Piercing    DamageType = "PIERCING"
+	Slashing    DamageType = "SLASHING"
+)
+
+type DamageRoll struct {
+	Die   int
+	Count int
+	Bonus int
+	Type  DamageType
+}
+
+func (dr DamageRoll) Roll() DamageAmount {
+	amount := dr.Bonus
+	for i := 0; i < dr.Count; i++ {
+		amount += dice.Roll(dr.Die)
+	}
+	return DamageAmount{Amount: amount, Type: dr.Type}
+}
+
+type DamageAmount struct {
+	Amount int
+	Type   DamageType
+}
+
+type BaseAttack struct {
+	Damage []DamageRoll
+	Bonus  int
+}
+
+func (ba BaseAttack) RollDamage() map[DamageType]DamageAmount {
+	damage := map[DamageType]DamageAmount{}
+	for _, dr := range ba.Damage {
+		amount := dr.Roll()
+		damage[amount.Type] = amount
+	}
+	return damage
+}
+====== FILE-END: game\damage.go ======
+====== FILE-START: game\entity.go ======
+package game
+
+import (
+	"fmt"
+	"github.com/google/uuid"
+)
+
+type Entity struct {
+	Id                 uuid.UUID
+	Name               string
+	HP                 int
+	AC                 int
+	Initiative         int
+	ActionsRemaining   int
+	ReactionsRemaining int
+	MapCounter         int
+	Controller         Controller
+	ActionCards        []*ActionCard
+	Faction            Faction
+}
+
+func (e *Entity) AddActionCard(card *ActionCard) {
+	e.ActionCards = append(e.ActionCards, card)
+}
+
+type Faction int
+
+const (
+	GoodGuys Faction = iota
+	BadGuys
+)
+
+// NewEntity creates a new Entity instance
+func NewEntity(name string, hp, ac int, faction Faction) *Entity {
+	return &Entity{
+		Id:                 uuid.New(),
+		Name:               name,
+		HP:                 hp,
+		AC:                 ac,
+		ActionsRemaining:   3,
+		ReactionsRemaining: 1,
+		Controller:         NewAIController(),
+		Faction:            faction,
+	}
+}
+
+// IsAlive checks if the entity is still alive
+func (e *Entity) IsAlive() bool {
+	return e.HP > 0
+}
+
+// SetController assigns a controllerhttp to the entity
+func (e *Entity) SetController(controller Controller) {
+	e.Controller = controller
+}
+
+// TakeDamage reduces the entity's HP by a given amount
+func (e *Entity) TakeDamage(damage int) {
+	e.HP -= damage
+	if e.HP < 0 {
+		e.HP = 0
+	}
+	fmt.Printf("%s takes %d damage! Remaining HP: %d\n", e.Name, damage, e.HP)
+}
+
+// RollInitiative sets the entity's initiative value
+func (e *Entity) RollInitiative(roll int) {
+	e.Initiative = roll
+}
+
+// ResetTurnResources resets actions and reactions at the start of a turn
+func (e *Entity) ResetTurnResources() {
+	e.ActionsRemaining = 3
+	e.ReactionsRemaining = 1
+	e.MapCounter = 0
+}
+
+// SpendAction attempts to consume an action
+func (e *Entity) SpendAction(cost int) bool {
+	if e.ActionsRemaining >= cost {
+		e.ActionsRemaining -= cost
+		return true
+	}
+	return false
+}
+
+// UseReaction attempts to consume a reaction
+func (e *Entity) UseReaction() bool {
+	if e.ReactionsRemaining > 0 {
+		e.ReactionsRemaining--
+		return true
+	}
+	return false
+}
+
+// GetNextLivingTarget finds the next living target for the entity
+func (e *Entity) GetNextLivingTarget(entities []*Entity) *Entity {
+	for _, target := range entities {
+		if target != e && target.IsAlive() {
+			return target
+		}
+	}
+	return nil
+}
+
+// String provides a readable string representation of the entity
+func (e *Entity) String() string {
+	return fmt.Sprintf("%s (HP: %d, AC: %d, Actions: %d, Reactions: %d)", e.Name, e.HP, e.AC, e.ActionsRemaining, e.ReactionsRemaining)
+}
+
+func findEntityByID(entities []*Entity, id uuid.UUID) *Entity {
+	for _, e := range entities {
+		if e.Id == id {
+			return e
+		}
+	}
+	return nil
+}
+
+func findActionCardByID(entity *Entity, id uuid.UUID) (*ActionCard, error) {
+	for _, card := range entity.GetActionCards() {
+		if card.ID == id {
+			return card, nil
+		}
+	}
+	return nil, fmt.Errorf("action card not found")
+}
+
+func (e *Entity) GetActionCards() []*ActionCard {
+	return e.ActionCards
+}
+====== FILE-END: game\entity.go ======
+====== FILE-START: game\grid.go ======
+package game
+
+// Position represents a coordinate on the grid.
+type Position struct {
+	X, Y int
+}
+
+// Grid represents the game grid, managing entities and their positions.
+type Grid struct {
+	Width  int
+	Height int
+	Cells  map[Position]*Entity
+}
+
+// NewGrid initializes a new grid with the given dimensions.
+func NewGrid(width, height int) *Grid {
+	return &Grid{
+		Width:  width,
+		Height: height,
+		Cells:  make(map[Position]*Entity),
+	}
+}
+
+// AddEntity places an entity at a specific position on the grid.
+func (g *Grid) AddEntity(pos Position, e *Entity) bool {
+	if !g.IsValidPosition(pos) || g.IsOccupied(pos) {
+		return false
+	}
+	g.Cells[pos] = e
+	return true
+}
+
+// MoveEntity moves an entity from one position to another.
+func (g *Grid) MoveEntity(from, to Position) bool {
+	if !g.IsValidPosition(to) || g.IsOccupied(to) {
+		return false
+	}
+	if entity, exists := g.Cells[from]; exists {
+		delete(g.Cells, from)
+		g.Cells[to] = entity
+		return true
+	}
+	return false
+}
+
+// RemoveEntity removes an entity from the grid.
+func (g *Grid) RemoveEntity(pos Position) {
+	delete(g.Cells, pos)
+}
+
+// IsOccupied checks if a position is occupied by an entity.
+func (g *Grid) IsOccupied(pos Position) bool {
+	_, exists := g.Cells[pos]
+	return exists
+}
+
+// IsValidPosition checks if a position is within grid bounds.
+func (g *Grid) IsValidPosition(pos Position) bool {
+	return pos.X >= 0 && pos.Y >= 0 && pos.X < g.Width && pos.Y < g.Height
+}
+
+// GetEntityAt retrieves the entity at a specific position.
+func (g *Grid) GetEntityAt(pos Position) *Entity {
+	return g.Cells[pos]
+}
+
+// GetEntityPosition retrieves the position of a specific entity on the grid.
+func (g *Grid) GetEntityPosition(e *Entity) Position {
+	for pos, entity := range g.Cells {
+		if entity == e {
+			return pos
+		}
+	}
+	return Position{-1, -1} // Invalid position if entity is not found
+}
+
+// GetAdjacentPositions returns all valid adjacent positions to a given position.
+func (g *Grid) GetAdjacentPositions(pos Position) []Position {
+	candidates := []Position{
+		{X: pos.X, Y: pos.Y - 1}, // Up
+		{X: pos.X, Y: pos.Y + 1}, // Down
+		{X: pos.X - 1, Y: pos.Y}, // Left
+		{X: pos.X + 1, Y: pos.Y}, // Right
+	}
+	valid := []Position{}
+	for _, p := range candidates {
+		if g.IsValidPosition(p) {
+			valid = append(valid, p)
+		}
+	}
+	return valid
+}
+
+// AreAdjacent checks if two positions are adjacent on the grid.
+func (g *Grid) AreAdjacent(pos1, pos2 Position) bool {
+	return g.CalculateDistance(pos1, pos2) == 1
+}
+
+// CalculateDistance computes the Manhattan distance between two positions.
+func (g *Grid) CalculateDistance(from, to Position) int {
+	dx := to.X - from.X
+	dy := to.Y - from.Y
+	return abs(dx) + abs(dy)
+}
+
+// CalculateDistanceBetweenEntities computes the distance between two entities.
+func (g *Grid) CalculateDistanceBetweenEntities(e1, e2 *Entity) int {
+	pos1 := g.GetEntityPosition(e1)
+	pos2 := g.GetEntityPosition(e2)
+	return g.CalculateDistance(pos1, pos2)
+}
+
+// abs returns the absolute value of an integer.
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+====== FILE-END: game\grid.go ======
+====== FILE-START: game\manager.go ======
+package game
+
+import (
+	"encoding/json"
+	"fmt"
+	dice "pf2eEngine/util"
+	"sort"
+)
+
+// GameState represents the state of the game, including turn order and current turn
+// Logs are added to track events in both human-readable and JSON format
+type GameState struct {
+	Grid        *Grid
+	Initiative  []*Entity
+	CurrentTurn int
+	Logs        []LogEntry
+	StepHistory *StepHistory
+}
+
+type StepHistory struct {
+	Steps []Step
+}
+
+func (sh *StepHistory) AddStep(step Step) {
+	sh.Steps = append(sh.Steps, step)
+}
+
+type LogEntry struct {
+	Message  string
+	Metadata map[string]interface{}
+	JSON     string
+}
+
+// NewGameState initializes a new game state with the given entities and grid
+func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
+	entities := []*Entity{}
+	for _, spawn := range spawns {
+		entities = append(entities, spawn.Unit)
+	}
+	gs := &GameState{
+		CurrentTurn: 0,
+		Grid:        NewGrid(gridWidth, gridHeight),
+		Initiative:  entities,
+		StepHistory: &StepHistory{},
+	}
+	// Place entities on the grid at their initial positions (e.g., in a row)
+	for _, e := range spawns {
+		gs.Grid.AddEntity(Position{X: e.Coordinates[0], Y: e.Coordinates[1]}, e.Unit)
+	}
+	gs.RollInitiative()
+	return gs
+}
+
+type StartTurnStep struct {
+	BaseStep
+	Entity *Entity
+}
+
+type EndTurnStep struct {
+	BaseStep
+	Entity *Entity
+}
+
+func (gs *GameState) IsEntityTurn(e *Entity) bool {
+	return gs.GetCurrentTurnEntity() == e
+}
+
+// RollInitiative determines initiative for all combatants and sorts them in descending order
+func (gs *GameState) RollInitiative() {
+	for _, e := range gs.Initiative {
+		roll := dice.Roll(20)
+		e.RollInitiative(roll)
+		executeStep(gs, StartTurnStep{
+			BaseStep: BaseStep{StepType: StartTurn},
+			Entity:   e,
+		}, fmt.Sprintf("%s rolls initiative: %d", e.Name, e.Initiative))
+	}
+
+	sort.Slice(gs.Initiative, func(i, j int) bool {
+		return gs.Initiative[i].Initiative > gs.Initiative[j].Initiative
+	})
+
+	executeStep(gs, StartTurnStep{
+		BaseStep: BaseStep{StepType: StartTurn},
+		Entity:   nil,
+	}, "Initiative order determined")
+}
+
+func (gs *GameState) getInitiativeOrder() []string {
+	order := []string{}
+	for _, e := range gs.Initiative {
+		order = append(order, fmt.Sprintf("%s (Initiative: %d)", e.Name, e.Initiative))
+	}
+	return order
+}
+
+// IsCombatOver checks if the combat has ended
+func (gs *GameState) IsCombatOver() bool {
+	var faction Faction
+	firstLivingEntity := true
+
+	for _, e := range gs.Initiative {
+		if e.IsAlive() {
+			if firstLivingEntity {
+				faction = e.Faction
+				firstLivingEntity = false
+			} else if e.Faction != faction {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// GetCurrentTurnEntity returns the entity whose turn it is
+func (gs *GameState) GetCurrentTurnEntity() *Entity {
+	return gs.Initiative[gs.CurrentTurn]
+}
+
+// LogEvent logs both human-readable and JSON-format logs
+func (gs *GameState) LogEvent(message string, metadata map[string]interface{}) {
+	logEntry := LogEntry{
+		Message:  message,
+		Metadata: metadata,
+		JSON:     toJSON(metadata),
+	}
+	gs.Logs = append(gs.Logs, logEntry)
+	fmt.Println(message)
+}
+
+func toJSON(metadata map[string]interface{}) string {
+	jsonData, _ := json.Marshal(metadata)
+	return string(jsonData)
+}
+
+// StartTurn triggers a StartTurnStep and logs the event
+func (gs *GameState) StartTurn() {
+	currentEntity := gs.GetCurrentTurnEntity()
+	startStep := StartTurnStep{
+		BaseStep: BaseStep{StepType: StartTurn},
+		Entity:   currentEntity,
+	}
+	executeStep(gs, startStep, fmt.Sprintf("%s's turn begins", currentEntity.Name))
+
+	currentEntity.ResetTurnResources()
+}
+
+// EndTurn triggers an EndTurnStep and logs the event
+func (gs *GameState) EndTurn() {
+	currentEntity := gs.GetCurrentTurnEntity()
+	endStep := EndTurnStep{
+		BaseStep: BaseStep{StepType: EndTurn},
+		Entity:   currentEntity,
+	}
+	executeStep(gs, endStep, fmt.Sprintf("%s's turn ends", currentEntity.Name))
+
+	for {
+		gs.CurrentTurn = (gs.CurrentTurn + 1) % len(gs.Initiative)
+		if gs.Initiative[gs.CurrentTurn].IsAlive() {
+			break
+		}
+	}
+}
+
+// GetWinner returns the winning entity, if combat is over
+func (gs *GameState) GetWinner() *Entity {
+	if !gs.IsCombatOver() {
+		return nil
+	}
+	for _, e := range gs.Initiative {
+		if e.IsAlive() {
+			return e
+		}
+	}
+	return nil
+}
+
+type Spawn struct {
+	Unit        *Entity
+	Coordinates [2]int
+}
+
+func StartCombat(spawns []Spawn, gridWidth, gridHeight int) *GameState {
+	gs := NewGameState(spawns, gridWidth, gridHeight)
+	go func() {
+		RunCombat(gs)
+	}()
+	return gs
+}
+
+func RunCombat(gs *GameState) {
+	for !gs.IsCombatOver() {
+		currentEntity := gs.GetCurrentTurnEntity()
+		gs.StartTurn()
+		action := currentEntity.Controller.NextAction(gs, currentEntity)
+		for action.Type != EndOfTurn {
+			ExecuteAction(gs, currentEntity, action)
+			action = currentEntity.Controller.NextAction(gs, currentEntity)
+		}
+		gs.EndTurn()
+	}
+
+	winner := gs.GetWinner()
+	if winner != nil {
+		gs.LogEvent(fmt.Sprintf("%s wins the combat!", winner.Name), map[string]interface{}{
+			"winner": winner.Name,
+		})
+	} else {
+		gs.LogEvent("Combat ends with no winner.", map[string]interface{}{})
+	}
+}
+====== FILE-END: game\manager.go ======
+====== FILE-START: game\playerController.go ======
+package game
+
+import (
+	"fmt"
+	"github.com/google/uuid"
+)
+
+// PlayerController listens for HTTP commands to control an entity
+type PlayerController struct {
+	GameState  *GameState
+	ActionChan chan Action // Channel for receiving actions
+}
+
+// NewPlayerController initializes a PlayerController
+func NewPlayerController(gs *GameState) *PlayerController {
+	return &PlayerController{
+		GameState:  gs,
+		ActionChan: make(chan Action, 1), // Buffered channel to hold one action
+	}
+}
+
+// NextAction retrieves the next action from the channel
+func (p *PlayerController) NextAction(e *Entity) Action {
+	return <-p.ActionChan
+}
+
+type ErrNotEntityTurn struct {
+	EntityId uuid.UUID
+}
+
+func (e ErrNotEntityTurn) Error() string {
+	return "Not entity turn"
+}
+
+type PlayerCommand struct {
+	Action   Action
+	EntityId uuid.UUID
+}
+
+func (p *PlayerController) AddAction(c PlayerCommand) error {
+	if p.GameState.GetCurrentTurnEntity().Id != c.EntityId {
+		return ErrNotEntityTurn{
+			EntityId: c.EntityId,
+		}
+	}
+	p.ActionChan <- c.Action
+	return nil
+}
+
+func (p *PlayerController) AddActionWithCard(entityID uuid.UUID, actionCardID uuid.UUID, params map[string]interface{}) error {
+	entity := findEntityByID(p.GameState.Initiative, entityID)
+	if entity == nil {
+		return fmt.Errorf("entity not found")
+	}
+	if !p.GameState.IsEntityTurn(entity) {
+		return fmt.Errorf("not entity's turn")
+	}
+
+	actionCard, err := findActionCardByID(entity, actionCardID)
+	if err != nil {
+		return fmt.Errorf("action card not found")
+	}
+
+	action, err := actionCard.GenerateAction(p.GameState, entity, params)
+	if err != nil {
+		return fmt.Errorf("failed to create action: %w", err)
+	}
+	p.ActionChan <- action
+	return nil
+}
+====== FILE-END: game\playerController.go ======
+====== FILE-START: game\steps.go ======
+package game
+
+import (
+	"sort"
+)
+
+type StepType string
+
+const (
+	BeforeDamage StepType = "BEFORE_DAMAGE"
+	AfterDamage  StepType = "AFTER_DAMAGE"
+	BeforeAttack StepType = "BEFORE_ATTACK"
+	AfterAttack  StepType = "AFTER_ATTACK"
+	StartTurn    StepType = "START_TURN"
+	EndTurn      StepType = "END_TURN"
+)
+
+type Step interface {
+	Type() StepType
+	Metadata() map[string]interface{}
+}
+
+type BaseStep struct {
+	StepType StepType
+	metadata map[string]interface{}
+}
+
+func (s BaseStep) Type() StepType {
+	return s.StepType
+}
+
+func (s BaseStep) Metadata() map[string]interface{} {
+	return s.metadata
+}
+
+type Trigger interface {
+	Priority() int
+	Condition(Step) bool
+	Execute(Step)
+}
+
+type BaseTrigger struct {
+	priority int
+}
+
+func (t BaseTrigger) Priority() int {
+	return t.priority
+}
+
+var triggers map[StepType][]Trigger
+
+func RegisterTrigger(trigger Trigger, t StepType) {
+	if triggers == nil {
+		triggers = make(map[StepType][]Trigger)
+	}
+	triggers[t] = append(triggers[t], trigger)
+}
+
+func executeStep(gs *GameState, step Step, logMessage string) {
+	gs.LogEvent(logMessage, step.Metadata())
+	gs.StepHistory.AddStep(step)
+
+	if triggersForStep, ok := triggers[step.Type()]; ok {
+		sort.Slice(triggersForStep, func(i, j int) bool {
+			return triggersForStep[i].Priority() > triggersForStep[j].Priority()
+		})
+
+		for _, trigger := range triggersForStep {
+			if trigger.Condition(step) {
+				trigger.Execute(step)
+			}
+		}
+	}
+}
+====== FILE-END: game\steps.go ======
+====== FILE-START: game\success.go ======
+package game
+
+type DegreeOfSuccess int
+
+const (
+	CriticalFailure DegreeOfSuccess = iota
+	Failure
+	Success
+	CriticalSuccess
+)
+
+func (d DegreeOfSuccess) String() string {
+	switch d {
+	case CriticalFailure:
+		return "Critical Failure"
+	case Failure:
+		return "Failure"
+	case Success:
+		return "Success"
+	case CriticalSuccess:
+		return "Critical Success"
+	default:
+		return "Unknown"
+	}
+}
+
+func calculateDegreeOfSuccess(roll int, total int, dc int) DegreeOfSuccess {
+	if roll == 20 {
+		if total >= dc {
+			return CriticalSuccess
+		}
+		if total <= dc-10 {
+			return Failure
+		}
+		return Success
+	}
+	if roll == 1 {
+		if total >= dc+10 {
+			return Success
+		}
+		if total >= dc {
+			return Failure
+		}
+		return CriticalFailure
+	}
+	if total >= dc+10 {
+		return CriticalSuccess
+	}
+	if total >= dc {
+		return Success
+	}
+	if total <= dc-10 {
+		return CriticalFailure
+	}
+	return Failure
+}
+====== FILE-END: game\success.go ======
+====== FILE-START: items\shieldBlock.go ======
+package items
+
+import (
+	"fmt"
+	"pf2eEngine/game"
+)
+
+type ShieldBlock struct {
+	Owner *game.Entity
+}
+
+// Enforce ShieldBlock implements the Trigger interface
+var _ game.Trigger = ShieldBlock{}
+
+func (trigger ShieldBlock) Priority() int {
+	return 10 // Example priority: higher values execute earlier
+}
+
+func (trigger ShieldBlock) Condition(step game.Step) bool {
+	if damageStep, ok := step.(game.BeforeDamageStep); ok {
+		return damageStep.Damage.Target != nil && damageStep.Damage.Target == trigger.Owner
+	}
+	return false
+}
+
+func (trigger ShieldBlock) Execute(step game.Step) {
+	if !trigger.Owner.UseReaction() {
+		fmt.Printf("%s has no reactions remaining to block!\n", trigger.Owner.Name)
+		return
+	}
+
+	if damageStep, ok := step.(game.BeforeDamageStep); ok {
+		damageStep.Damage.Blocked += 5
+		fmt.Printf("%s uses Shield Block to block 5 damage.\n", trigger.Owner.Name)
+	}
+}
+====== FILE-END: items\shieldBlock.go ======
+====== FILE-START: main.go ======
+package main
+
+import (
+	"math/rand"
+	"pf2eEngine/controllerhttp"
+	"pf2eEngine/game"
+	"pf2eEngine/items"
+	"time"
+)
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // Seed the random number generator
+
+	d8Plus3Slashing := game.DamageRoll{
+		Die:   8,
+		Count: 1,
+		Bonus: 3,
+		Type:  game.Slashing,
+	}
+
+	// Create combatants
+	warrior := game.NewEntity("Warrior", 30, 15, game.GoodGuys)
+	warriorAttack := game.BaseAttack{
+		Damage: []game.DamageRoll{d8Plus3Slashing},
+		Bonus:  5,
+	}
+	warrior.AddActionCard(game.NewStrikeCard(warriorAttack))
+	goblin1 := makeAGoblin("Goblin 1")
+	goblin2 := makeAGoblin("Goblin 2")
+	goblin3 := makeAGoblin("Goblin 3")
+	goblin4 := makeAGoblin("Goblin 4")
+	game.RegisterTrigger(items.ShieldBlock{Owner: warrior}, "BEFORE_DAMAGE")
+	spawns := []game.Spawn{
+		{Unit: goblin1, Coordinates: [2]int{0, 1}},
+		{Unit: goblin2, Coordinates: [2]int{2, 1}},
+		{Unit: warrior, Coordinates: [2]int{1, 1}},
+		{Unit: goblin3, Coordinates: [2]int{1, 0}},
+		{Unit: goblin4, Coordinates: [2]int{1, 2}},
+	}
+
+	// Initialize game state
+	gameState := game.NewGameState(spawns, 10, 10)
+
+	// Initialize player controller
+	playerController := game.NewPlayerController(gameState)
+
+	// Initialize and start the HTTP server
+	server := controllerhttp.NewControllerServer(8080, playerController)
+	server.GameState = game.StartCombat(spawns, 10, 10)
+	server.Start()
+
+	// Prevent the main function from exiting
+	select {}
+}
+
+func makeAGoblin(name string) *game.Entity {
+	goblin := game.NewEntity(name, 20, 13, game.BadGuys)
+	goblinAttack := game.BaseAttack{
+		Damage: []game.DamageRoll{{Die: 6, Count: 1, Bonus: 1, Type: game.Piercing}},
+		Bonus:  3,
+	}
+	goblin.AddActionCard(game.NewStrikeCard(goblinAttack))
+	return goblin
+}
+====== FILE-END: main.go ======
+====== FILE-START: scripts\consolidator.go ======
+package scripts
+
+const StartDelimiter = "====== FILE-START: %s ======\n"
+const EndDelimiter = "====== FILE-END: %s ======\n"
+const OutputFileName = "packed_files.txt"
+====== FILE-END: scripts\consolidator.go ======
+====== FILE-START: scripts\pack\pack.go ======
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"pf2eEngine/scripts"
+	"strings"
+)
+
+func main() {
+	outputFile, err := os.Create(scripts.OutputFileName)
+	if err != nil {
+		fmt.Println("Error creating output file:", err)
+		return
+	}
+	defer outputFile.Close()
+
+	err = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".go") {
+			return err
+		}
+
+		return processFile(outputFile, path)
+	})
+
+	if err != nil {
+		fmt.Println("Error walking directory:", err)
+	}
+}
+
+func processFile(outputFile *os.File, path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Write start delimiter
+	if _, err := fmt.Fprintf(outputFile, scripts.StartDelimiter, path); err != nil {
+		return err
+	}
+
+	// Copy file contents
+	if _, err := io.Copy(outputFile, file); err != nil {
+		return err
+	}
+
+	// Ensure content ends with newline before end delimiter
+	if !endsWithNewline(file) {
+		if _, err := fmt.Fprintln(outputFile); err != nil {
+			return err
+		}
+	}
+
+	// Write end delimiter
+	_, err = fmt.Fprintf(outputFile, scripts.EndDelimiter, path)
+	return err
+}
+
+func endsWithNewline(file *os.File) bool {
+	stat, _ := file.Stat()
+	if stat.Size() == 0 {
+		return true
+	}
+
+	_, _ = file.Seek(-1, io.SeekEnd)
+	var buf [1]byte
+	_, err := file.Read(buf[:])
+	_, err = file.Seek(0, io.SeekStart) // Reset file pointer
+	return err == nil && buf[0] == '\n'
+}
+====== FILE-END: scripts\pack\pack.go ======
+====== FILE-START: scripts\unpack\unpack.go ======
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"path/filepath"
+	"pf2eEngine/scripts"
+	"strings"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: unpack <packed-file>")
+		return
+	}
+
+	packedFile, err := os.Open(os.Args[1])
+	if err != nil {
+		fmt.Println("Error opening packed file:", err)
+		return
+	}
+	defer packedFile.Close()
+
+	scanner := bufio.NewScanner(packedFile)
+	var currentFile *os.File
+	var currentPath string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		switch {
+		case strings.HasPrefix(line, scripts.StartDelimiter):
+			currentPath = extractPath(line, scripts.StartDelimiter)
+			if err := createFile(currentPath); err != nil {
+				fmt.Printf("Error creating %s: %v\n", currentPath, err)
+				currentPath = ""
+				continue
+			}
+			currentFile, err = os.Create(currentPath)
+			if err != nil {
+				fmt.Printf("Error opening %s: %v\n", currentPath, err)
+				currentPath = ""
+			}
+
+		case strings.HasPrefix(line, scripts.EndDelimiter):
+			if currentFile != nil {
+				currentFile.Close()
+				currentFile = nil
+			}
+			currentPath = ""
+
+		case currentFile != nil:
+			_, err := fmt.Fprintln(currentFile, line)
+			if err != nil {
+				fmt.Printf("Error writing to %s: %v\n", currentPath, err)
+				currentFile.Close()
+				currentPath = ""
+			}
+		}
+	}
+
+	if currentFile != nil {
+		currentFile.Close()
+	}
+}
+
+func extractPath(line, prefix string) string {
+	return strings.TrimPrefix(line, prefix)
+}
+
+func createFile(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return nil
+}
+====== FILE-END: scripts\unpack\unpack.go ======
+====== FILE-START: util\dice.go ======
+package dice
+
+import "math/rand"
+
+// test change
+
+// Roll simulates a dice roll of n sides
+func Roll(sides int) int {
+	return rand.Intn(sides) + 1
+}
+
+// RollMultiple rolls multiple dice of the same type and returns the total
+func RollMultiple(sides, count int) int {
+	total := 0
+	for i := 0; i < count; i++ {
+		total += Roll(sides)
+	}
+	return total
+}
+
+// RollWithModifier rolls a dice and adds a modifier to the result
+func RollWithModifier(sides, modifier int) int {
+	return Roll(sides) + modifier
+}
+====== FILE-END: util\dice.go ======
