@@ -1641,96 +1641,150 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"pf2eEngine/scripts"
 	"strings"
 )
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("Usage: unpack <packed-file>")
-		return
-	}
+type PackedFile struct {
+	Path    string
+	Content strings.Builder
+}
 
-	packedFile, err := os.Open(os.Args[1])
+func main() {
+	packedFile, err := os.Open(scripts.OutputFileName)
 	if err != nil {
-		fmt.Println("Error opening packed file:", err)
+		fmt.Println("❌ Error opening packed file:", err)
 		return
 	}
 	defer packedFile.Close()
 
+	// First pass: Parse all files from packed file
+	packedFiles, err := parsePackedFiles(packedFile)
+	if err != nil {
+		fmt.Println("❌ Error parsing packed files:", err)
+		return
+	}
+
+	// Delete files that exist but aren't in the packed files
+	err = deleteOrphanedGoFiles(".", packedFiles)
+	if err != nil {
+		fmt.Println("❌ Error cleaning orphaned files:", err)
+		return
+	}
+
+	// Second pass: Write/update all packed files
+	for _, pf := range packedFiles {
+		err := writeFile(pf.Path, pf.Content.String())
+		if err != nil {
+			fmt.Printf("❌ Error writing %s: %v\n", pf.Path, err)
+		} else {
+			fmt.Printf("📄 Updated/Created: %s\n", pf.Path)
+		}
+	}
+
+	fmt.Println("🎉 Unpacking completed successfully!")
+}
+
+func parsePackedFiles(packedFile *os.File) ([]PackedFile, error) {
+	var files []PackedFile
+	var currentFile *PackedFile
 	scanner := bufio.NewScanner(packedFile)
-	var currentFile *os.File
-	var currentPath string
 
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Check if the line indicates the start of a new file
 		if strings.HasPrefix(line, "====== FILE-START: ") {
-			// Extract file path
-			currentPath = extractPath(line, "====== FILE-START: ", " ======")
-			if currentPath == "" {
-				fmt.Println("Error: Could not extract file path from:", line)
-				continue
+			// Close previous file if any
+			if currentFile != nil {
+				files = append(files, *currentFile)
 			}
 
-			// Ensure directories exist
-			if err := createFile(currentPath); err != nil {
-				fmt.Printf("Error creating %s: %v\n", currentPath, err)
-				currentPath = ""
-				continue
+			path := extractPath(line)
+			if path == "" {
+				return nil, fmt.Errorf("invalid file start line: %s", line)
 			}
 
-			// Open file for writing
-			currentFile, err = os.Create(currentPath)
-			if err != nil {
-				fmt.Printf("Error opening %s: %v\n", currentPath, err)
-				currentPath = ""
+			currentFile = &PackedFile{
+				Path: path,
 			}
 			continue
 		}
 
-		// Check for end of a file
 		if strings.HasPrefix(line, "====== FILE-END: ") {
 			if currentFile != nil {
-				currentFile.Close()
+				files = append(files, *currentFile)
 				currentFile = nil
 			}
-			currentPath = ""
 			continue
 		}
 
-		// Write contents to the current file
 		if currentFile != nil {
-			_, err := currentFile.WriteString(line + "\n")
-			if err != nil {
-				fmt.Printf("Error writing to %s: %v\n", currentPath, err)
-				currentFile.Close()
-				currentPath = ""
-			}
+			currentFile.Content.WriteString(line + "\n")
 		}
 	}
 
 	if currentFile != nil {
-		currentFile.Close()
+		files = append(files, *currentFile)
 	}
 
-	fmt.Println("Unpacking completed successfully.")
+	return files, scanner.Err()
 }
 
-// Extracts the file path from the delimiter line
-func extractPath(line, start, end string) string {
-	line = strings.TrimPrefix(line, start)
-	line = strings.TrimSuffix(line, end)
-	return strings.TrimSpace(line)
+func deleteOrphanedGoFiles(rootDir string, packedFiles []PackedFile) error {
+	// Create set of packed file paths
+	packedPaths := make(map[string]struct{})
+	for _, pf := range packedFiles {
+		packedPaths[pf.Path] = struct{}{}
+	}
+
+	return filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".go") {
+			relPath, err := filepath.Rel(rootDir, path)
+			if err != nil {
+				return err
+			}
+
+			if _, exists := packedPaths[relPath]; !exists {
+				fmt.Printf("🗑️ Deleting orphaned file: %s\n", relPath)
+				return os.Remove(path)
+			}
+		}
+		return nil
+	})
 }
 
-// Ensures the directory for the file exists before creating it
-func createFile(path string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+func writeFile(path string, content string) error {
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return nil
+
+	// Check if content matches existing file
+	existingContent, err := os.ReadFile(path)
+	if err == nil && string(existingContent) == content {
+		fmt.Printf("✅ No changes: %s\n", path)
+		return nil
+	}
+
+	// Write file with new content
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func extractPath(line string) string {
+	startMarker := "====== FILE-START: "
+	endMarker := " ======"
+
+	if !strings.HasPrefix(line, startMarker) || !strings.HasSuffix(line, endMarker) {
+		return ""
+	}
+
+	path := strings.TrimPrefix(line, startMarker)
+	path = strings.TrimSuffix(path, endMarker)
+	return strings.TrimSpace(path)
 }
 ====== FILE-END: scripts\unpack\unpack.go ======
 ====== FILE-START: util\dice.go ======
