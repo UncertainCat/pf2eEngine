@@ -1641,7 +1641,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"pf2eEngine/scripts"
 	"strings"
 )
 
@@ -1665,29 +1664,44 @@ func main() {
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		switch {
-		case strings.HasPrefix(line, scripts.StartDelimiter):
-			currentPath = extractPath(line, scripts.StartDelimiter)
+		// Check if the line indicates the start of a new file
+		if strings.HasPrefix(line, "====== FILE-START: ") {
+			// Extract file path
+			currentPath = extractPath(line, "====== FILE-START: ", " ======")
+			if currentPath == "" {
+				fmt.Println("Error: Could not extract file path from:", line)
+				continue
+			}
+
+			// Ensure directories exist
 			if err := createFile(currentPath); err != nil {
 				fmt.Printf("Error creating %s: %v\n", currentPath, err)
 				currentPath = ""
 				continue
 			}
+
+			// Open file for writing
 			currentFile, err = os.Create(currentPath)
 			if err != nil {
 				fmt.Printf("Error opening %s: %v\n", currentPath, err)
 				currentPath = ""
 			}
+			continue
+		}
 
-		case strings.HasPrefix(line, scripts.EndDelimiter):
+		// Check for end of a file
+		if strings.HasPrefix(line, "====== FILE-END: ") {
 			if currentFile != nil {
 				currentFile.Close()
 				currentFile = nil
 			}
 			currentPath = ""
+			continue
+		}
 
-		case currentFile != nil:
-			_, err := fmt.Fprintln(currentFile, line)
+		// Write contents to the current file
+		if currentFile != nil {
+			_, err := currentFile.WriteString(line + "\n")
 			if err != nil {
 				fmt.Printf("Error writing to %s: %v\n", currentPath, err)
 				currentFile.Close()
@@ -1699,12 +1713,18 @@ func main() {
 	if currentFile != nil {
 		currentFile.Close()
 	}
+
+	fmt.Println("Unpacking completed successfully.")
 }
 
-func extractPath(line, prefix string) string {
-	return strings.TrimPrefix(line, prefix)
+// Extracts the file path from the delimiter line
+func extractPath(line, start, end string) string {
+	line = strings.TrimPrefix(line, start)
+	line = strings.TrimSuffix(line, end)
+	return strings.TrimSpace(line)
 }
 
+// Ensures the directory for the file exists before creating it
 func createFile(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -1717,8 +1737,6 @@ func createFile(path string) error {
 package dice
 
 import "math/rand"
-
-// test change
 
 // Roll simulates a dice roll of n sides
 func Roll(sides int) int {
