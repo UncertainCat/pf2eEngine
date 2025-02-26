@@ -4,21 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"pf2eEngine/controllerhttp/api"
 	"time"
 )
 
 // Start starts the HTTP server and registers both HTTP and WebSocket handlers.
 func (cs *ControllerServer) Start() {
 	// API endpoints with CORS handling
+	http.HandleFunc("/api/v1/action", cs.corsMiddleware(cs.HTTPHandler))
+	http.HandleFunc("/api/v1/steps", cs.corsMiddleware(cs.StepsHandler))
+	http.HandleFunc("/api/v1/state", cs.corsMiddleware(cs.GameStateHandler))
+	http.HandleFunc("/ws", cs.WSHandler) // WebSocket doesn't need CORS
+	
+	// Support legacy endpoints for backward compatibility
 	http.HandleFunc("/action", cs.corsMiddleware(cs.HTTPHandler))
 	http.HandleFunc("/steps", cs.corsMiddleware(cs.StepsHandler))
-	http.HandleFunc("/ws", cs.WSHandler) // WebSocket doesn't need CORS
 
 	// Serve static frontend files
 	cs.ServeStaticFiles()
 
 	fmt.Printf("Server running on port %d\n", cs.Port)
 	fmt.Printf("Access the frontend at http://localhost:%d\n", cs.Port)
+	fmt.Printf("API endpoints available at http://localhost:%d/api/v1/\n", cs.Port)
 
 	// Start the broadcast goroutine.
 	go cs.broadcastUpdates()
@@ -62,50 +69,25 @@ func (cs *ControllerServer) startGameStateUpdates() {
 			continue
 		}
 
-		// Create a simplified game state for the frontend
-		type EntityData struct {
-			ID               string `json:"id"`
-			Name             string `json:"name"`
-			HP               int    `json:"hp"`
-			MaxHP            int    `json:"maxHp"`
-			AC               int    `json:"ac"`
-			ActionsRemaining int    `json:"actionsRemaining"`
-			Faction          int    `json:"faction"`
-			X                int    `json:"x"`
-			Y                int    `json:"y"`
-			IsAlive          bool   `json:"isAlive"`
+		// Convert game state to API format
+		gameState := api.GameStateToAPIState(cs.GameState)
+		
+		// Create an event wrapper
+		event := api.GameEvent{
+			EventBase: api.EventBase{
+				Type:      api.EventTypeGameState,
+				Version:   api.CurrentVersion,
+				Timestamp: time.Now(),
+				Message:   "Game state update",
+			},
+			Data: gameState,
 		}
-
-		entities := make([]EntityData, 0, len(cs.GameState.Initiative))
-		for _, entity := range cs.GameState.Initiative {
-			// Get entity position
-			pos := cs.GameState.Grid.GetEntityPosition(entity)
-
-			entityData := EntityData{
-				ID:               entity.Id.String(),
-				Name:             entity.Name,
-				HP:               entity.HP,
-				MaxHP:            entity.HP, // Use initial HP as max HP for now
-				AC:               entity.AC,
-				ActionsRemaining: entity.ActionsRemaining,
-				Faction:          int(entity.Faction),
-				X:                pos.X,
-				Y:                pos.Y,
-				IsAlive:          entity.IsAlive(),
-			}
-			entities = append(entities, entityData)
-		}
-
-		// Create and send update message
-		updateMsg := map[string]interface{}{
-			"type":        "gameUpdate",
-			"entities":    entities,
-			"currentTurn": cs.GameState.GetCurrentTurnEntity().Id.String(),
-		}
-
-		jsonData, err := json.Marshal(updateMsg)
+		
+		jsonData, err := json.Marshal(event)
 		if err == nil {
 			cs.wsBroadcast <- jsonData
+		} else {
+			fmt.Printf("Error marshaling game state update: %v\n", err)
 		}
 	}
 }

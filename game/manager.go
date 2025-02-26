@@ -29,6 +29,10 @@ func (sh *StepHistory) AddStep(step Step) {
 	sh.Steps = append(sh.Steps, step)
 }
 
+func (sh *StepHistory) GetSteps() []Step {
+	return sh.Steps
+}
+
 type LogEntry struct {
 	Message  string
 	Metadata map[string]interface{}

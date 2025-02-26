@@ -47,12 +47,20 @@ func isAPIPath(path string) bool {
 		"/action",
 		"/steps",
 		"/ws",
+		"/api/v1/action",
+		"/api/v1/steps",
+		"/api/v1/state",
 	}
 
 	for _, apiPath := range apiPaths {
 		if path == apiPath {
 			return true
 		}
+	}
+
+	// Also check if path starts with /api/
+	if len(path) >= 5 && path[:5] == "/api/" {
+		return true
 	}
 
 	return false

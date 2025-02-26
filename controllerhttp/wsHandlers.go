@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"pf2eEngine/controllerhttp/api"
 	"pf2eEngine/game"
+	"time"
 )
 
 // upgrader is used to upgrade HTTP connections to WebSocket connections.
@@ -77,73 +79,37 @@ func (cs *ControllerServer) broadcastUpdates() {
 
 // BroadcastGameStep sends a game step to all WebSocket clients in a frontend-friendly format
 func (cs *ControllerServer) BroadcastGameStep(step interface{}, message string) {
-	// Convert the step to a frontend-friendly format
+	// First, check if the step implements the game.Step interface
+	if gameStep, ok := step.(game.Step); ok {
+		// Convert the step to an API event using our adapter
+		event := api.StepToEvent(gameStep, message)
+		
+		// Convert to JSON and broadcast
+		jsonData, err := json.Marshal(event)
+		if err != nil {
+			fmt.Printf("Error marshaling API event: %v\n", err)
+			return
+		}
+		
+		cs.wsBroadcast <- jsonData
+		return
+	}
+	
+	// Fallback for any steps that don't implement the game.Step interface
+	// This ensures backward compatibility during migration
 	stepData := map[string]interface{}{
-		"message": message,
+		"type":      "INFO",
+		"version":   api.CurrentVersion,
+		"timestamp": time.Now(),
+		"message":   message,
 	}
-
-	// Add specific data based on step type
-	switch s := step.(type) {
-	case game.BeforeAttackStep:
-		stepData["type"] = "ATTACK"
-		stepData["data"] = map[string]interface{}{
-			"attacker": s.Attack.Attacker.Name,
-			"defender": s.Attack.Defender.Name,
-			"roll":     s.Attack.Roll,
-			"result":   s.Attack.Result,
-		}
-	case game.AfterAttackStep:
-		stepData["type"] = "ATTACK_RESULT"
-		stepData["data"] = map[string]interface{}{
-			"attacker": s.Attack.Attacker.Name,
-			"defender": s.Attack.Defender.Name,
-			"degree":   s.Attack.Degree.String(),
-		}
-	case game.BeforeDamageStep:
-		stepData["type"] = "DAMAGE"
-		stepData["data"] = map[string]interface{}{
-			"source": s.Damage.Source.Name,
-			"target": s.Damage.Target.Name,
-			"amount": s.Damage.Amount,
-		}
-	case game.AfterDamageStep:
-		stepData["type"] = "DAMAGE_RESULT"
-		stepData["data"] = map[string]interface{}{
-			"source":  s.Damage.Source.Name,
-			"target":  s.Damage.Target.Name,
-			"blocked": s.Damage.Blocked,
-			"taken":   s.Damage.Taken,
-		}
-	case game.StartTurnStep:
-		stepData["type"] = "TURN_START"
-		if s.Entity != nil {
-			stepData["data"] = map[string]interface{}{
-				"entity": map[string]interface{}{
-					"name": s.Entity.Name,
-					"id":   s.Entity.Id.String(),
-				},
-			}
-		}
-	case game.EndTurnStep:
-		stepData["type"] = "TURN_END"
-		if s.Entity != nil {
-			stepData["data"] = map[string]interface{}{
-				"entity": map[string]interface{}{
-					"name": s.Entity.Name,
-					"id":   s.Entity.Id.String(),
-				},
-			}
-		}
-	default:
-		stepData["type"] = "INFO"
-	}
-
+	
 	// Convert to JSON and broadcast
 	jsonData, err := json.Marshal(stepData)
 	if err != nil {
-		fmt.Printf("Error marshaling step data: %v\n", err)
+		fmt.Printf("Error marshaling fallback step data: %v\n", err)
 		return
 	}
-
+	
 	cs.wsBroadcast <- jsonData
 }

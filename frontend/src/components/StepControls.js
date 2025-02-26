@@ -1,75 +1,106 @@
-import React from 'react';
-import { ChevronRight, PlayCircle, PauseCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { ChevronRight, PlayCircle, PauseCircle, RefreshCw, Clock, RotateCcw } from 'lucide-react';
 import { useGame } from '../context/GameContext';
 
 const StepControls = () => {
     const {
-        stepMode,
-        toggleStepMode,
         nextStep,
-        hasNextStep,
-        currentStepIndex,
-        pendingSteps,
-        connected
+        hasNextEvent,
+        pendingEvents,
+        processedEvents,
+        connected,
+        historyLoaded,
+        loadMoreHistory,
+        resetGameState
     } = useGame();
-
+    
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [resetting, setResetting] = useState(false);
+    
+    // Function to handle loading more history
+    const handleLoadMore = async () => {
+        setLoadingMore(true);
+        await loadMoreHistory();
+        setLoadingMore(false);
+    };
+    
+    // Function to handle resetting the game state
+    const handleReset = async () => {
+        setResetting(true);
+        await resetGameState();
+        setResetting(false);
+    };
+    
     return (
         <div className="border-t border-gray-300 p-4 bg-white">
             <div className="flex items-center justify-between">
-                <div className="flex items-center">
+                <div className="flex items-center space-x-2">
                     <button
-                        className={`mr-4 flex items-center px-4 py-2 rounded ${
-                            stepMode ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'
+                        className={`flex items-center px-4 py-2 rounded ${
+                            hasNextEvent ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-200 text-gray-500 cursor-not-allowed'
                         }`}
-                        onClick={toggleStepMode}
+                        onClick={nextStep}
+                        disabled={!hasNextEvent}
                     >
-                        {stepMode ? (
-                            <>
-                                <PauseCircle size={18} className="mr-2" />
-                                Step Mode
-                            </>
-                        ) : (
-                            <>
-                                <PlayCircle size={18} className="mr-2" />
-                                Auto Mode
-                            </>
-                        )}
+                        <ChevronRight size={18} className="mr-2" />
+                        Next Step {pendingEvents.length > 0 ? `(${pendingEvents.length})` : ''}
                     </button>
-
-                    {stepMode && (
+                    
+                    {processedEvents.length > 0 && (
                         <button
-                            className={`flex items-center px-4 py-2 rounded ${
-                                hasNextStep ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'
+                            className={`flex items-center px-3 py-2 rounded ${
+                                loadingMore ? 'bg-gray-300 text-gray-500' : 'bg-blue-500 text-white hover:bg-blue-600'
                             }`}
-                            onClick={nextStep}
-                            disabled={!hasNextStep}
+                            onClick={handleLoadMore}
+                            disabled={loadingMore}
                         >
-                            <ChevronRight size={18} className="mr-2" />
-                            Next Step
+                            {loadingMore ? (
+                                <RefreshCw size={16} className="mr-2 animate-spin" />
+                            ) : (
+                                <Clock size={16} className="mr-2" />
+                            )}
+                            Load Earlier
                         </button>
                     )}
+                    
+                    <button
+                        className={`flex items-center px-3 py-2 rounded ${
+                            resetting ? 'bg-gray-300 text-gray-500' : 'bg-yellow-500 text-white hover:bg-yellow-600'
+                        }`}
+                        onClick={handleReset}
+                        disabled={resetting || !historyLoaded}
+                    >
+                        {resetting ? (
+                            <RefreshCw size={16} className="mr-2 animate-spin" />
+                        ) : (
+                            <RotateCcw size={16} className="mr-2" />
+                        )}
+                        Reset
+                    </button>
                 </div>
 
-                <div className="text-sm text-gray-600">
-                    {connected ? (
-                        <span className="text-green-600">Connected</span>
+                <div className="flex items-center text-sm text-gray-600">
+                    {historyLoaded ? (
+                        <>
+                            <div className="mr-4">
+                                <span className="font-semibold">Events:</span> {processedEvents.length} processed, {pendingEvents.length} pending
+                            </div>
+                            <div>
+                                {connected ? (
+                                    <span className="text-green-600">Connected</span>
+                                ) : (
+                                    <span className="text-red-600">Disconnected</span>
+                                )}
+                            </div>
+                        </>
                     ) : (
-                        <span className="text-red-600">Disconnected</span>
-                    )}
-
-                    {stepMode && pendingSteps.length > 0 && (
-                        <span className="ml-4">
-              Steps: {currentStepIndex} ({pendingSteps.length} pending)
-            </span>
+                        <div className="flex items-center">
+                            <RefreshCw size={16} className="mr-2 animate-spin" />
+                            <span>Loading history...</span>
+                        </div>
                     )}
                 </div>
             </div>
-
-            {stepMode && pendingSteps.length > 0 && (
-                <div className="mt-2 p-2 bg-gray-100 rounded text-sm text-gray-700">
-                    Next: {pendingSteps[0]?.message || "Unknown action"}
-                </div>
-            )}
         </div>
     );
 };

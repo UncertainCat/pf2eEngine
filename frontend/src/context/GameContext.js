@@ -1,388 +1,487 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { createContext, useState, useEffect, useContext, useCallback, useReducer } from 'react';
+import { apiClient, GameEvent, EntityState } from '../api';
 
 // Create the context
-const GameContext = createContext();
+const GameContext = createContext(null);
 
 // Custom hook for using the game context
 export function useGame() {
     return useContext(GameContext);
 }
 
+// Helper function to get default max HP based on entity type
+// This ensures we have reasonable values when the server data is incomplete
+function getDefaultMaxHP(entity) {
+    // Use existing maxHp if it seems valid (greater than current HP)
+    if (entity.maxHp && entity.maxHp >= entity.hp) {
+        return entity.maxHp;
+    }
+    
+    // Otherwise, make some guesses based on name/faction
+    const name = entity.name.toLowerCase();
+    
+    if (name.includes("warrior")) {
+        return 30; // Warriors have 30 HP in the server code
+    } else if (name.includes("goblin")) {
+        return 20; // Goblins have 20 HP in the server code
+    } else if (entity.faction === "goodGuys") {
+        return Math.max(30, entity.hp); // Good guys are usually tougher
+    } else {
+        return Math.max(20, entity.hp); // Default for others
+    }
+}
+
+// Game state reducer to handle step-by-step updates
+function gameStateReducer(state, action) {
+    switch (action.type) {
+        case 'SET_INITIAL_STATE':
+            // Process entities to ensure proper HP values
+            const entities = action.payload.entities.map(e => ({
+                ...e,
+                // Fix HP if it's incorrect (ensure we start with full health)
+                hp: e.hp <= 0 ? getDefaultMaxHP(e) : e.hp,
+                // Fix maxHp if it's not set correctly
+                maxHp: e.maxHp <= 0 || e.maxHp < e.hp ? getDefaultMaxHP(e) : e.maxHp
+            }));
+
+            return {
+                ...action.payload,
+                entities,
+                // Keep track of original positions and HPs for reset
+                originalEntities: entities.map(e => ({...e}))
+            };
+            
+        case 'RESET_TO_INITIAL':
+            return {
+                ...state,
+                entities: state.originalEntities.map(e => ({...e})),
+                currentTurn: state.originalCurrentTurn
+            };
+            
+        case 'UPDATE_ENTITY_HP':
+            return {
+                ...state,
+                entities: state.entities.map(entity => 
+                    entity.id === action.payload.entityId
+                        ? { ...entity, hp: action.payload.hp }
+                        : entity
+                )
+            };
+            
+        case 'UPDATE_ENTITY_POSITION':
+            return {
+                ...state,
+                entities: state.entities.map(entity => 
+                    entity.id === action.payload.entityId
+                        ? { ...entity, position: action.payload.position }
+                        : entity
+                )
+            };
+            
+        case 'UPDATE_CURRENT_TURN':
+            return {
+                ...state,
+                currentTurn: action.payload.entityId
+            };
+            
+        case 'UPDATE_ENTITY_ACTIONS':
+            return {
+                ...state,
+                entities: state.entities.map(entity => 
+                    entity.id === action.payload.entityId
+                        ? { 
+                            ...entity, 
+                            actionsRemaining: action.payload.actionsRemaining,
+                            reactionsRemaining: action.payload.reactionsRemaining
+                        }
+                        : entity
+                )
+            };
+            
+        default:
+            return state;
+    }
+}
+
 export const GameProvider = ({ children }) => {
-    // WebSocket connection
-    const [socket, setSocket] = useState(null);
+    // Connection state
     const [connected, setConnected] = useState(false);
-
-    // Game state
-    const [entities, setEntities] = useState([]);
-    const [currentEntity, setCurrentEntity] = useState(null);
-    const [selectedEntity, setSelectedEntity] = useState(null);
-    const [selectedAction, setSelectedAction] = useState(null);
-    const [selectedTarget, setSelectedTarget] = useState(null);
-    const [logs, setLogs] = useState([]);
-
-    // Step-by-step playback controls
-    const [stepMode, setStepMode] = useState(true);
-    const [steps, setSteps] = useState([]);
-    const [currentStepIndex, setCurrentStepIndex] = useState(0);
-    const [lastFetchedStepIndex, setLastFetchedStepIndex] = useState(0);
-    const [pendingSteps, setPendingSteps] = useState([]);
-
-    // Connect to WebSocket
+    
+    // Selection state (UI state)
+    const [selectedEntityId, setSelectedEntityId] = useState(null);
+    const [selectedActionId, setSelectedActionId] = useState(null);
+    const [targetEntityId, setTargetEntityId] = useState(null);
+    
+    // History/event tracking
+    const [processedEvents, setProcessedEvents] = useState([]);
+    const [pendingEvents, setPendingEvents] = useState([]);
+    const [historyLoaded, setHistoryLoaded] = useState(false);
+    const [historyIndex, setHistoryIndex] = useState(0);
+    
+    // Main game state
+    const [gameState, dispatch] = useReducer(gameStateReducer, null);
+    
+    // Load initial game state 
     useEffect(() => {
-        const ws = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
-
-        ws.onopen = () => {
+        const loadGameState = async () => {
+            try {
+                const response = await apiClient.getGameState();
+                console.log('Initial game state response:', response);
+                
+                // The response is wrapped in a GameEvent object with the actual state in data
+                if (response && response.data) {
+                    const state = response.data;
+                    console.log('Initial game state:', state);
+                    
+                    // Store the original current turn for resets
+                    state.originalCurrentTurn = state.currentTurn;
+                    
+                    // Initialize the game state
+                    dispatch({ 
+                        type: 'SET_INITIAL_STATE', 
+                        payload: state 
+                    });
+                    
+                    // Now that we have state, load history
+                    loadStepHistory();
+                } else {
+                    console.error('Invalid game state response format:', response);
+                }
+            } catch (error) {
+                console.error('Failed to load game state:', error);
+            }
+        };
+        
+        // Load step history
+        const loadStepHistory = async () => {
+            try {
+                // First load up to 100 steps of history
+                const history = await apiClient.getStepHistory(0, 100);
+                console.log('Loaded step history:', history);
+                
+                if (Array.isArray(history) && history.length > 0) {
+                    // Add all history events to the pending queue for stepping through
+                    setPendingEvents(history);
+                    setHistoryLoaded(true);
+                    setHistoryIndex(history.length);
+                } else {
+                    console.log('No step history found or history is empty');
+                    setHistoryLoaded(true);
+                }
+            } catch (error) {
+                console.error('Failed to load step history:', error);
+                setHistoryLoaded(true); // Still mark as loaded even if there's an error
+            }
+        };
+        
+        loadGameState();
+    }, []);
+    
+    // Connect to WebSocket and handle events
+    useEffect(() => {
+        if (!historyLoaded || !gameState) return; // Don't connect to WebSocket until history is loaded and game state is available
+        
+        // Handler for connection status
+        const handleConnect = () => {
             console.log('Connected to server');
             setConnected(true);
         };
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                console.log('Message from server:', data);
-
-                if (data.type === 'gameUpdate') {
-                    if (data.entities) {
-                        // Process entities to ensure they have maxHp
-                        const processedEntities = data.entities.map(entity => ({
-                            ...entity,
-                            maxHp: entity.maxHp || entity.hp || 30 // Use hp as fallback or default to 30
-                        }));
-                        setEntities(processedEntities);
-                    }
-                    if (data.currentTurn !== undefined) {
-                        const current = data.entities?.find(e => e.id === data.currentTurn);
-                        setCurrentEntity(current || null);
-                    }
-                }
-
-                // Add to logs if it's a message
-                if (data.message || data.type) {
-                    // Extract metadata to ensure consistent format with HTTP steps
-                    const meta = data.metadata || data.data || {};
-                    const eventType = (data.type || '').toUpperCase();
-                    let message = data.message;
-
-                    // If no message provided, try to generate one
-                    if (!message) {
-                        // Handle common event types
-                        if (eventType.includes('ATTACK')) {
-                            if (meta.attacker && meta.defender) {
-                                message = `${meta.attacker} attacks ${meta.defender}`;
-                            }
-                        }
-                        else if (eventType.includes('DAMAGE')) {
-                            if (meta.source && meta.target) {
-                                const amount = meta.damage ? ` ${meta.damage}` : '';
-                                message = `${meta.source} dealt${amount} damage to ${meta.target}`;
-                            }
-                        }
-                        else if (eventType.includes('TURN')) {
-                            if (meta.entity) {
-                                message = eventType.includes('START') ?
-                                    `${meta.entity}'s turn begins` :
-                                    `${meta.entity}'s turn ends`;
-                            }
-                        }
-
-                        // If we still don't have a message, create one from the event type
-                        if (!message && eventType) {
-                            // Convert from SNAKE_CASE to Title Case with spaces
-                            const readableType = eventType
-                                .split('_')
-                                .map(word => word.charAt(0) + word.slice(1).toLowerCase())
-                                .join(' ');
-                            message = readableType;
-                        }
-                    }
-
-                    const newLog = {
-                        message: message || "Game event occurred",
-                        type: data.type || "INFO",
-                        timestamp: new Date(),
-                        data: meta,
-                        processed: false
-                    };
-
-                    if (stepMode) {
-                        // In step mode, queue steps for manual advance
-                        setPendingSteps(prev => [...prev, newLog]);
-                    } else {
-                        // In auto mode, add directly to logs
-                        setLogs(prev => [...prev, newLog]);
-                    }
-                }
-            } catch (error) {
-                console.error('Error parsing WebSocket message:', error);
-                // If it's just a plain text message
-                const newLog = {
-                    message: event.data,
-                    type: "INFO",
-                    timestamp: new Date(),
-                    processed: false
-                };
-
-                if (stepMode) {
-                    setPendingSteps(prev => [...prev, newLog]);
-                } else {
-                    setLogs(prev => [...prev, newLog]);
-                }
-            }
-        };
-
-        ws.onclose = () => {
+        
+        const handleDisconnect = () => {
             console.log('Disconnected from server');
             setConnected(false);
         };
-
-        setSocket(ws);
-
-        return () => {
-            ws.close();
+        
+        // Handler for game state updates
+        const handleGameState = (event) => {
+            if (event.data) {
+                console.log('Game state update from server:', event.data);
+                // We don't automatically update the game state here, as we want
+                // all updates to happen through the step queue
+                
+                // Instead, we compare if there are new entities or major changes
+                // and then reset the game state only if needed
+                if (gameState && event.data.entities && 
+                    (event.data.entities.length !== gameState.entities.length)) {
+                    console.log('Major game state change detected, resetting state');
+                    dispatch({ 
+                        type: 'SET_INITIAL_STATE', 
+                        payload: event.data 
+                    });
+                }
+            }
         };
-    }, []);
-
-    // Fetch initial game state and updates
-    useEffect(() => {
-        const fetchSteps = async () => {
-            try {
-                const response = await fetch(`/steps?index=${lastFetchedStepIndex}`);
-                if (response.ok) {
-                    const newSteps = await response.json();
-                    if (newSteps && newSteps.length > 0) {
-                        setLastFetchedStepIndex(lastFetchedStepIndex + newSteps.length);
-
-                        // Process new steps
-                        const formattedSteps = newSteps.map(step => {
-                            // Create descriptive messages based on step data
-                            let message = step.message;
-                            const stepType = (step.type || '').toUpperCase();
-                            const meta = step.metadata || {};
-                            let logData = { ...meta };
-
-                            // If we don't have a message, try to generate one based on available data
-                            if (!message) {
-                                // Handle common step types
-                                if (stepType.includes('ATTACK')) {
-                                    if (meta.Attacker && meta.Defender) {
-                                        if (stepType.includes('BEFORE') || stepType === 'ATTACK') {
-                                            message = `${meta.Attacker} attacks ${meta.Defender}`;
-                                        } else if (stepType.includes('AFTER') || stepType.includes('RESULT')) {
-                                            const result = meta.Degree ? ` (${meta.Degree})` : '';
-                                            message = `${meta.Attacker}'s attack on ${meta.Defender} resolved${result}`;
-                                        }
-                                    }
+        
+        // Handler for all other game events
+        const handleGameEvent = (event) => {
+            console.log('Game event received via WebSocket:', event);
+            // Don't duplicate game state events in the combat log
+            if (event.type === 'GAME_STATE') return;
+            
+            // Only add events that are newer than our history
+            // This prevents duplication of events already loaded from history
+            const eventTimestamp = new Date(event.timestamp).getTime();
+            const shouldAddEvent = processedEvents.length === 0 || 
+                !processedEvents.some(e => {
+                    const existingTimestamp = new Date(e.timestamp).getTime();
+                    return existingTimestamp === eventTimestamp && e.type === event.type;
+                });
+                
+            if (shouldAddEvent) {
+                console.log('Adding new event to queue:', event);
+                // Add to pending events for manual stepping
+                setPendingEvents(prev => [...prev, event]);
+            } else {
+                console.log('Skipping duplicate event:', event);
+            }
+        };
+        
+        // Register event handlers
+        apiClient.on('connect', handleConnect);
+        apiClient.on('disconnect', handleDisconnect);
+        apiClient.on('gamestate', handleGameState); // Note: lowercase to match the event type
+        apiClient.on('all', handleGameEvent);
+        
+        // Connect to server
+        apiClient.connect();
+        
+        // Cleanup when unmounting
+        return () => {
+            apiClient.off('connect', handleConnect);
+            apiClient.off('disconnect', handleDisconnect);
+            apiClient.off('gamestate', handleGameState);
+            apiClient.off('all', handleGameEvent);
+            apiClient.disconnect();
+        };
+    }, [historyLoaded, gameState, processedEvents]);
+    
+    // Process an event and update game state
+    const processEvent = useCallback((event) => {
+        if (!gameState) return;
+        
+        console.log('Processing event:', event);
+        
+        switch (event.type) {
+            case 'DAMAGE':
+            case 'DAMAGE_RESULT':
+                // Process damage events by updating entity HP
+                if (event.data && event.data.target && event.data.target.id) {
+                    if (event.data.taken) {
+                        const targetId = event.data.target.id;
+                        const entity = gameState.entities.find(e => e.id === targetId);
+                        if (entity) {
+                            const newHp = Math.max(0, entity.hp - event.data.taken);
+                            dispatch({
+                                type: 'UPDATE_ENTITY_HP',
+                                payload: {
+                                    entityId: targetId,
+                                    hp: newHp
                                 }
-                                else if (stepType.includes('DAMAGE')) {
-                                    if (meta.Source && meta.Target) {
-                                        if (stepType.includes('BEFORE')) {
-                                            message = `${meta.Source} is about to deal damage to ${meta.Target}`;
-                                        } else if (stepType.includes('AFTER') || stepType.includes('RESULT')) {
-                                            const amount = meta.Taken ? ` ${meta.Taken}` : '';
-                                            message = `${meta.Source} dealt${amount} damage to ${meta.Target}`;
-                                        }
-                                    }
-                                }
-                                else if (stepType.includes('TURN')) {
-                                    const entity = meta.Entity || meta.entity;
-                                    if (entity) {
-                                        if (stepType.includes('START')) {
-                                            message = `${entity}'s turn begins`;
-                                        } else if (stepType.includes('END')) {
-                                            message = `${entity}'s turn ends`;
-                                        }
-                                    }
-                                }
-
-                                // If we still don't have a message, try some more generic approaches
-                                if (!message) {
-                                    // Look for any entity references
-                                    if (meta.Entity || meta.entity) {
-                                        const entity = meta.Entity || meta.entity;
-                                        message = `${entity} performs an action`;
-                                    }
-                                    else if (meta.Attacker || meta.Source) {
-                                        const actor = meta.Attacker || meta.Source;
-                                        message = `${actor} performs an action`;
-                                    }
-                                    else if (meta.Defender || meta.Target) {
-                                        const target = meta.Defender || meta.Target;
-                                        message = `${target} is affected`;
-                                    }
-                                    // Still no message? Create one from the step type
-                                    else if (stepType) {
-                                        // Convert from SNAKE_CASE to Title Case with spaces
-                                        const readableType = stepType
-                                            .split('_')
-                                            .map(word => word.charAt(0) + word.slice(1).toLowerCase())
-                                            .join(' ');
-                                        message = readableType;
-                                    }
-                                }
-                            }
-
-                            return {
-                                message: message || "Game event occurred",
-                                type: step.type || "INFO",
-                                timestamp: new Date(),
-                                data: logData,
-                                processed: false
-                            };
-                        });
-
-                        if (stepMode) {
-                            // In step mode, queue steps for manual advance
-                            setPendingSteps(prev => [...prev, ...formattedSteps]);
-                        } else {
-                            // In auto mode, add directly to logs and process
-                            setLogs(prev => [...prev, ...formattedSteps]);
-                            processSteps(formattedSteps);
+                            });
                         }
                     }
                 }
-            } catch (error) {
-                console.error('Error fetching steps:', error);
-            }
-        };
-
-        // Initial fetch and set up interval
-        fetchSteps();
-        const interval = setInterval(fetchSteps, 1000);
-
-        return () => clearInterval(interval);
-    }, [lastFetchedStepIndex, stepMode]);
-
-    // Process a collection of steps
-    const processSteps = (stepsToProcess) => {
-        stepsToProcess.forEach(step => {
-            if (step.processed) return;
-
-            // Mark as processed
-            step.processed = true;
-
-            // Update game state based on step type
-            if (step.type === 'DAMAGE_RESULT' && step.data) {
-                // Update HP for the entity that took damage
-                const { target, taken } = step.data;
-                if (target && target.id) {
-                    setEntities(prev => prev.map(e =>
-                        e.id === target.id
-                            ? { ...e, hp: Math.max(0, e.hp - (taken || 0)) }
-                            : e
-                    ));
+                break;
+                
+            case 'TURN_START':
+                // Update current turn
+                if (event.data && event.data.entity && event.data.entity.id) {
+                    dispatch({
+                        type: 'UPDATE_CURRENT_TURN',
+                        payload: {
+                            entityId: event.data.entity.id
+                        }
+                    });
+                    
+                    // Reset actions for the entity
+                    const entity = gameState.entities.find(e => e.id === event.data.entity.id);
+                    if (entity) {
+                        dispatch({
+                            type: 'UPDATE_ENTITY_ACTIONS',
+                            payload: {
+                                entityId: event.data.entity.id,
+                                actionsRemaining: 3, // Default for PF2e
+                                reactionsRemaining: 1
+                            }
+                        });
+                    }
                 }
-            }
-            else if (step.type === 'TURN_START' && step.data && step.data.entity) {
-                // Update current entity
-                const entityId = step.data.entity.id;
-                setCurrentEntity(prev => entities.find(e => e.id === entityId) || prev);
-            }
-        });
-    };
-
-    // Advance to the next step
-    const nextStep = () => {
-        if (pendingSteps.length === 0) return;
-
-        // Get the next step
-        const step = pendingSteps[0];
-
-        // Process the step
-        processSteps([step]);
-
-        // Move the step from pending to logs
-        setLogs(prev => [...prev, step]);
-        setPendingSteps(prev => prev.slice(1));
-
-        // Increment the step index
-        setCurrentStepIndex(prev => prev + 1);
-    };
-
-    // Toggle step mode
-    const toggleStepMode = () => {
-        setStepMode(prev => !prev);
-
-        if (stepMode) {
-            // Switching from step mode to auto mode
-            // Process all pending steps
-            processSteps(pendingSteps);
-            setLogs(prev => [...prev, ...pendingSteps]);
-            setPendingSteps([]);
+                break;
+                
+            case 'ENTITY_MOVE':
+                // Update entity position
+                if (event.data && event.data.entity && event.data.entity.id && event.data.position) {
+                    dispatch({
+                        type: 'UPDATE_ENTITY_POSITION',
+                        payload: {
+                            entityId: event.data.entity.id,
+                            position: event.data.position
+                        }
+                    });
+                }
+                break;
+                
+            case 'ACTION_COMPLETE':
+                // Update action count
+                if (event.data && event.data.entity && event.data.entity.id && 
+                    typeof event.data.actionsRemaining !== 'undefined') {
+                    dispatch({
+                        type: 'UPDATE_ENTITY_ACTIONS',
+                        payload: {
+                            entityId: event.data.entity.id,
+                            actionsRemaining: event.data.actionsRemaining,
+                            reactionsRemaining: event.data.reactionsRemaining || 0
+                        }
+                    });
+                }
+                break;
+                
+            default:
+                // For other event types, log but don't update state
+                console.log('Unhandled event type:', event.type);
+                break;
         }
-    };
-
-    // Send action to server
-    const sendAction = () => {
-        if (!selectedEntity || !selectedAction || !selectedTarget) return;
-
-        const command = {
-            entity_id: selectedEntity.id,
-            action_card_id: selectedAction.id,
-            params: {
-                targetID: selectedTarget.id
+    }, [gameState]);
+    
+    // Auto-advance through history or on user click
+    const nextStep = useCallback(() => {
+        if (pendingEvents.length === 0 || !gameState) return;
+        
+        // Get the next event
+        const event = pendingEvents[0];
+        
+        // Process the event and update game state
+        processEvent(event);
+        
+        // Move the event from pending to processed
+        setProcessedEvents(prev => [...prev, event]);
+        setPendingEvents(prev => prev.slice(1));
+    }, [pendingEvents, gameState, processEvent]);
+    
+    // Reset game state to initial state
+    const resetGameState = useCallback(() => {
+        if (!gameState) return;
+        
+        // Reset to initial state
+        dispatch({ type: 'RESET_TO_INITIAL' });
+        
+        // Clear processed events and reload pending events
+        setProcessedEvents([]);
+        
+        // Reload step history to repopulate pending events
+        const loadStepHistory = async () => {
+            try {
+                const history = await apiClient.getStepHistory(0, 100);
+                if (Array.isArray(history) && history.length > 0) {
+                    setPendingEvents(history);
+                    setHistoryIndex(history.length);
+                }
+            } catch (error) {
+                console.error('Failed to reload step history:', error);
             }
         };
-
-        // Send via HTTP
-        fetch(`/action`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(command)
-        }).then(response => {
-            if (!response.ok) {
-                console.error('Error sending action');
+        
+        loadStepHistory();
+    }, [gameState]);
+    
+    // Load more history if needed
+    const loadMoreHistory = useCallback(async () => {
+        if (!gameState) return;
+        
+        try {
+            const moreHistory = await apiClient.getStepHistory(historyIndex, 100);
+            if (Array.isArray(moreHistory) && moreHistory.length > 0) {
+                console.log(`Loaded ${moreHistory.length} more historical events`);
+                setPendingEvents(prev => [...moreHistory, ...prev]);
+                setHistoryIndex(historyIndex + moreHistory.length);
+            } else {
+                console.log('No more history to load');
             }
-        }).catch(error => {
-            console.error('Error:', error);
-        });
-
-        // Clear selections
-        setSelectedAction(null);
-        setSelectedTarget(null);
-    };
-
-    // Get available actions for the selected entity
-    const getEntityActions = (entity) => {
-        if (!entity || !entity.actionCards) {
-            return [
-                { id: '101', name: 'Strike', description: 'Make a melee attack', actionCost: 1 },
-                { id: '102', name: 'Shield Block', description: 'Use your shield to block damage', actionCost: 0 }
-            ];
+        } catch (error) {
+            console.error('Failed to load more history:', error);
         }
-        return entity.actionCards;
-    };
-
+    }, [historyIndex, gameState]);
+    
+    // Send an action to the server
+    const sendAction = useCallback(async (entityId, actionCardId, targetId, params = {}) => {
+        if (!entityId || !actionCardId || !targetId) return;
+        
+        try {
+            // Build the command
+            const command = {
+                entity_id: entityId,
+                action_card_id: actionCardId,
+                params: {
+                    ...params,
+                    targetID: targetId
+                }
+            };
+            
+            // Send to server
+            const response = await apiClient.sendCommand(command);
+            console.log('Action response:', response);
+            
+            // Clear selections
+            setSelectedActionId(null);
+            setTargetEntityId(null);
+            
+            return true;
+        } catch (error) {
+            console.error('Error sending action:', error);
+            return false;
+        }
+    }, []);
+    
+    // Entity helper functions
+    const getEntityById = useCallback((id) => {
+        if (!gameState || !id) return null;
+        return gameState.entities.find(e => e.id === id) || null;
+    }, [gameState]);
+    
+    // Get current HP directly from game state
+    const getEntityCurrentHP = useCallback((id) => {
+        if (!gameState || !id) return 0;
+        const entity = gameState.entities.find(e => e.id === id);
+        return entity ? entity.hp : 0;
+    }, [gameState]);
+    
+    // Context value
     const value = {
         // Connection state
         connected,
-
+        
         // Game state
-        entities,
-        currentEntity,
-        selectedEntity,
-        setSelectedEntity,
-        selectedAction,
-        setSelectedAction,
-        selectedTarget,
-        setSelectedTarget,
-        logs,
-
-        // Actions
-        sendAction,
-        getEntityActions,
-
-        // Step-by-step playback
-        stepMode,
-        toggleStepMode,
+        gameState,
+        entities: gameState?.entities || [],
+        currentEntityId: gameState?.currentTurn,
+        
+        // Selection state
+        selectedEntityId,
+        setSelectedEntityId,
+        selectedActionId, 
+        setSelectedActionId,
+        targetEntityId,
+        setTargetEntityId,
+        
+        // Entity helpers
+        getEntityById,
+        getEntityCurrentHP,
+        
+        // Combat log and steps
+        processedEvents,
+        pendingEvents,
+        hasNextEvent: pendingEvents.length > 0,
         nextStep,
-        pendingSteps,
-        currentStepIndex,
-        hasNextStep: pendingSteps.length > 0
+        loadMoreHistory,
+        resetGameState,
+        
+        // Status
+        historyLoaded,
+        
+        // Actions
+        sendAction
     };
-
+    
     return (
         <GameContext.Provider value={value}>
             {children}
