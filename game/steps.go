@@ -60,6 +60,11 @@ func executeStep(gs *GameState, step Step, logMessage string) {
 	gs.LogEvent(logMessage, step.Metadata())
 	gs.StepHistory.AddStep(step)
 
+	// Notify event listeners (like WebSocket handlers)
+	if gs.StepCallback != nil {
+		gs.StepCallback(step, logMessage)
+	}
+
 	if triggersForStep, ok := triggers[step.Type()]; ok {
 		sort.Slice(triggersForStep, func(i, j int) bool {
 			return triggersForStep[i].Priority() > triggersForStep[j].Priority()

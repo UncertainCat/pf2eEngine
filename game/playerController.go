@@ -20,7 +20,7 @@ func NewPlayerController(gs *GameState) *PlayerController {
 }
 
 // NextAction retrieves the next action from the channel
-func (p *PlayerController) NextAction(e *Entity) Action {
+func (p *PlayerController) NextAction(gs *GameState, e *Entity) Action {
 	return <-p.ActionChan
 }
 

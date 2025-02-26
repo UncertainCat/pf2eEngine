@@ -44,10 +44,18 @@ func main() {
 	// Initialize player controller
 	playerController := game.NewPlayerController(gameState)
 
-	// Initialize and start the HTTP server
+	// Initialize the HTTP server
 	server := controllerhttp.NewControllerServer(8080, playerController)
-	server.GameState = game.StartCombat(spawns, 10, 10)
+
+	// Connect game state to server
+	gameState.StepCallback = server.BroadcastGameStep
+	server.GameState = gameState
+
+	// Start the server
 	server.Start()
+
+	// Start combat simulation in a goroutine
+	go game.RunCombat(gameState)
 
 	// Prevent the main function from exiting
 	select {}

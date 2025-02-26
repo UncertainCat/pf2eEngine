@@ -7,14 +7,18 @@ import (
 	"sort"
 )
 
+// StepCallback is a function type for callbacks when steps occur
+type StepCallback func(step interface{}, message string)
+
 // GameState represents the state of the game, including turn order and current turn
 // Logs are added to track events in both human-readable and JSON format
 type GameState struct {
-	Grid        *Grid
-	Initiative  []*Entity
-	CurrentTurn int
-	Logs        []LogEntry
-	StepHistory *StepHistory
+	Grid         *Grid
+	Initiative   []*Entity
+	CurrentTurn  int
+	Logs         []LogEntry
+	StepHistory  *StepHistory
+	StepCallback StepCallback
 }
 
 type StepHistory struct {
@@ -178,14 +182,6 @@ func (gs *GameState) GetWinner() *Entity {
 type Spawn struct {
 	Unit        *Entity
 	Coordinates [2]int
-}
-
-func StartCombat(spawns []Spawn, gridWidth, gridHeight int) *GameState {
-	gs := NewGameState(spawns, gridWidth, gridHeight)
-	go func() {
-		RunCombat(gs)
-	}()
-	return gs
 }
 
 func RunCombat(gs *GameState) {
