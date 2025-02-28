@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"pf2eEngine/controllerhttp"
 	"pf2eEngine/game"
@@ -25,17 +26,22 @@ func main() {
 		Bonus:  5,
 	}
 	warrior.AddActionCard(game.NewStrikeCard(warriorAttack))
+	warrior.AddActionCard(game.NewStrideCard())
+	
 	goblin1 := makeAGoblin("Goblin 1")
 	goblin2 := makeAGoblin("Goblin 2")
 	goblin3 := makeAGoblin("Goblin 3")
 	goblin4 := makeAGoblin("Goblin 4")
+	
 	game.RegisterTrigger(items.ShieldBlock{Owner: warrior}, "BEFORE_DAMAGE")
+	
+	// Position entities with more spacing to demonstrate grid-based movement
 	spawns := []game.Spawn{
-		{Unit: goblin1, Coordinates: [2]int{0, 1}},
-		{Unit: goblin2, Coordinates: [2]int{2, 1}},
-		{Unit: warrior, Coordinates: [2]int{1, 1}},
-		{Unit: goblin3, Coordinates: [2]int{1, 0}},
-		{Unit: goblin4, Coordinates: [2]int{1, 2}},
+		{Unit: goblin1, Coordinates: [2]int{0, 0}},    // Top left
+		{Unit: goblin2, Coordinates: [2]int{6, 0}},    // Top right
+		{Unit: warrior, Coordinates: [2]int{3, 5}},    // Middle bottom - player is farther away
+		{Unit: goblin3, Coordinates: [2]int{0, 8}},    // Bottom left
+		{Unit: goblin4, Coordinates: [2]int{6, 8}},    // Bottom right
 	}
 
 	// Initialize game state
@@ -54,8 +60,8 @@ func main() {
 	// Start the server
 	server.Start()
 
-	// Start combat simulation in a goroutine
-	go game.RunCombat(gameState)
+	// Don't automatically start combat - wait for player to step through manually
+	fmt.Println("Server is ready. Use the frontend to step through combat.")
 
 	// Prevent the main function from exiting
 	select {}
@@ -68,5 +74,6 @@ func makeAGoblin(name string) *game.Entity {
 		Bonus:  3,
 	}
 	goblin.AddActionCard(game.NewStrikeCard(goblinAttack))
+	goblin.AddActionCard(game.NewStrideCard()) // Add Stride action card
 	return goblin
 }

@@ -93,14 +93,38 @@ func (g *Grid) GetAdjacentPositions(pos Position) []Position {
 
 // AreAdjacent checks if two positions are adjacent on the grid.
 func (g *Grid) AreAdjacent(pos1, pos2 Position) bool {
-	return g.CalculateDistance(pos1, pos2) == 1
+	// In grid coordinates, positions are adjacent if they are at most 1 square away in each direction
+	dx := abs(pos2.X - pos1.X)
+	dy := abs(pos2.Y - pos1.Y)
+	return dx <= 1 && dy <= 1 && !(dx == 0 && dy == 0)
 }
 
-// CalculateDistance computes the Manhattan distance between two positions.
+// CalculateDistance computes the distance between two positions using PF2E rules.
+// In PF2E, diagonal movement costs 5ft for the first square, then alternates between 10ft and 5ft.
 func (g *Grid) CalculateDistance(from, to Position) int {
-	dx := to.X - from.X
-	dy := to.Y - from.Y
-	return abs(dx) + abs(dy)
+	dx := abs(to.X - from.X)
+	dy := abs(to.Y - from.Y)
+	
+	// Calculate diagonal movement count
+	diagonals := min(dx, dy)
+	
+	// Calculate straight movement count
+	straights := max(dx, dy) - diagonals
+	
+	// Apply PF2E diagonal rules: first diagonal is 5ft, second is 10ft, third is 5ft, etc.
+	diagonalDistance := 0
+	for i := 0; i < diagonals; i++ {
+		if i%2 == 0 {
+			diagonalDistance += 5
+		} else {
+			diagonalDistance += 10
+		}
+	}
+	
+	// Straight movements are always 5ft each
+	straightDistance := straights * 5
+	
+	return diagonalDistance + straightDistance
 }
 
 // CalculateDistanceBetweenEntities computes the distance between two entities.
@@ -116,4 +140,70 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// min returns the minimum of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// max returns the maximum of two integers.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// FindBestMove finds the best position to move towards the target from a starting position,
+// considering the maximum movement range and grid obstacles.
+func (g *Grid) FindBestMove(from Position, toward Position, maxDistance int) Position {
+	// Simple approach: try to move closer in both X and Y dimensions
+	dx := toward.X - from.X
+	dy := toward.Y - from.Y
+	
+	// Determine step direction for X and Y
+	stepX := 0
+	if dx > 0 {
+		stepX = 1
+	} else if dx < 0 {
+		stepX = -1
+	}
+	
+	stepY := 0
+	if dy > 0 {
+		stepY = 1
+	} else if dy < 0 {
+		stepY = -1
+	}
+	
+	// Try to move along both dimensions
+	bestPosition := from
+	bestDistance := g.CalculateDistance(from, toward)
+	
+	// Try moving up to maxDistance steps
+	for steps := 1; steps <= maxDistance; steps++ {
+		// Try moving in various directions 
+		candidates := []Position{
+			{X: from.X + stepX*steps, Y: from.Y}, // Move horizontally
+			{X: from.X, Y: from.Y + stepY*steps}, // Move vertically
+			{X: from.X + stepX*min(steps, abs(dx)), Y: from.Y + stepY*min(steps, abs(dy))}, // Move diagonally
+		}
+		
+		for _, candidate := range candidates {
+			// Check if the position is valid and unoccupied
+			if g.IsValidPosition(candidate) && !g.IsOccupied(candidate) {
+				candidateDistance := g.CalculateDistance(candidate, toward)
+				if candidateDistance < bestDistance {
+					bestPosition = candidate
+					bestDistance = candidateDistance
+				}
+			}
+		}
+	}
+	
+	return bestPosition
 }

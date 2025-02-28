@@ -143,7 +143,7 @@ func NewStrikeCard(attack BaseAttack) *ActionCard {
 	return NewSingleTargetActionCard(
 		"Strike",
 		OneActionCard,
-		"Make a melee strike against a target within range 5.",
+		"Make a melee strike against a target within reach.",
 		[]TargetCriterion{
 			IsAlive(),
 			Range(5),
@@ -152,4 +152,53 @@ func NewStrikeCard(attack BaseAttack) *ActionCard {
 			PerformAttack(gs, attack, actor, target)
 		},
 	)
+}
+
+// NewStrideCard creates a movement action card according to PF2E rules.
+func NewStrideCard() *ActionCard {
+	return &ActionCard{
+		ID:          uuid.New(),
+		Name:        "Stride",
+		Type:        OneActionCard,
+		Description: "Move up to your Speed (default: 5 squares).",
+		actionGenerator: func(gs *GameState, actor *Entity, params map[string]interface{}) (Action, error) {
+			targetID, ok := params["targetID"].(uuid.UUID)
+			if !ok {
+				return Action{}, errors.New("target not found in params")
+			}
+			
+			target := findEntityByID(gs.Initiative, targetID)
+			if target == nil {
+				return Action{}, errors.New("target entity does not exist")
+			}
+			
+			return Action{
+				Name: "Stride",
+				Cost: 1,
+				perform: func(gs *GameState, actor *Entity) {
+					actorPos := gs.Grid.GetEntityPosition(actor)
+					targetPos := gs.Grid.GetEntityPosition(target)
+					
+					// Default movement speed in PF2E is 25 feet (5 squares)
+					speed := 5
+					
+					// Find the best position to move to
+					newPos := gs.Grid.FindBestMove(actorPos, targetPos, speed)
+					
+					// If we found a valid position to move to
+					if newPos != actorPos {
+						success := gs.Grid.MoveEntity(actorPos, newPos)
+						if success {
+							fmt.Printf("%s strides from (%d,%d) to (%d,%d).\n", 
+								actor.Name, actorPos.X, actorPos.Y, newPos.X, newPos.Y)
+						} else {
+							fmt.Printf("%s attempted to stride but was blocked.\n", actor.Name)
+						}
+					} else {
+						fmt.Printf("%s cannot stride any closer to %s.\n", actor.Name, target.Name)
+					}
+				},
+			}, nil
+		},
+	}
 }

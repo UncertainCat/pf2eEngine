@@ -17,30 +17,63 @@ func (a AIController) NextAction(gs *GameState, e *Entity) Action {
 	if target == nil || e.ActionsRemaining == 0 {
 		return EndTurnAction(gs, e)
 	}
-	strikes := getStrikeCards(e)
-	if len(strikes) == 0 {
-		fmt.Println("No strike cards available for", e.Name)
-		return EndTurnAction(gs, e)
-	}
+	
+	// Get current positions
+	actorPos := gs.Grid.GetEntityPosition(e)
+	targetPos := gs.Grid.GetEntityPosition(target)
+	
+	// Prepare common parameters
 	params := map[string]interface{}{}
 	params["targetID"] = target.Id
-	action, err := strikes[0].GenerateAction(gs, e, params)
-	if err != nil {
-		return EndTurnAction(gs, e)
+	
+	// If not adjacent to target, try to stride towards them
+	if !gs.Grid.AreAdjacent(actorPos, targetPos) {
+		// Look for a stride card
+		strideCard := getActionCardByName(e, "Stride")
+		if strideCard != nil {
+			action, err := strideCard.GenerateAction(gs, e, params)
+			if err == nil {
+				fmt.Printf("%s decides to stride towards %s.\n", e.Name, target.Name)
+				return action
+			}
+		}
 	}
-	return action
+	
+	// If adjacent to target or no stride card available, try to strike
+	strikes := getActionCardsByName(e, "Strike")
+	if len(strikes) > 0 {
+		action, err := strikes[0].GenerateAction(gs, e, params)
+		if err == nil {
+			return action
+		}
+	}
+	
+	// If no valid action could be generated, end turn
+	fmt.Printf("%s has no valid actions remaining.\n", e.Name)
+	return EndTurnAction(gs, e)
+}
+
+func getActionCardByName(e *Entity, name string) *ActionCard {
+	for _, card := range e.ActionCards {
+		if card.Name == name {
+			return card
+		}
+	}
+	return nil
+}
+
+func getActionCardsByName(e *Entity, name string) []*ActionCard {
+	var cards []*ActionCard
+	for _, card := range e.ActionCards {
+		if card.Name == name {
+			cards = append(cards, card)
+		}
+	}
+	return cards
 }
 
 func getStrikeCards(e *Entity) []*ActionCard {
-	cards := e.ActionCards
-	// Filter out all non-strike cards
-	var strikeCards []*ActionCard
-	for _, card := range cards {
-		if card.Name == "Strike" {
-			strikeCards = append(strikeCards, card)
-		}
-	}
-	return strikeCards
+	return getActionCardsByName(e, "Strike")
 }
 
 // findNearestEntity locates the closest living entity to the given entity

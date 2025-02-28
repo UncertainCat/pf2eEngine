@@ -122,8 +122,10 @@ func PerformAttack(gs *GameState, baseAttack BaseAttack, attacker *Entity, defen
 	attackerPos := gs.Grid.GetEntityPosition(attacker)
 	defenderPos := gs.Grid.GetEntityPosition(defender)
 
+	// Check if attacker and defender are adjacent (required for melee attacks)
 	if !gs.Grid.AreAdjacent(attackerPos, defenderPos) {
-		fmt.Printf("%s cannot attack %s; they are not adjacent.\n", attacker.Name, defender.Name)
+		fmt.Printf("%s cannot attack %s; they are not adjacent (distance: %d).\n", 
+			attacker.Name, defender.Name, gs.Grid.CalculateDistance(attackerPos, defenderPos))
 		return
 	}
 

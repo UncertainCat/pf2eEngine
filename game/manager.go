@@ -5,6 +5,7 @@ import (
 	"fmt"
 	dice "pf2eEngine/util"
 	"sort"
+	"time"
 )
 
 // StepCallback is a function type for callbacks when steps occur
@@ -51,11 +52,22 @@ func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
 		Initiative:  entities,
 		StepHistory: &StepHistory{},
 	}
-	// Place entities on the grid at their initial positions (e.g., in a row)
+	
+	// Place entities on the grid at their initial positions
 	for _, e := range spawns {
 		gs.Grid.AddEntity(Position{X: e.Coordinates[0], Y: e.Coordinates[1]}, e.Unit)
 	}
+	
+	// Roll initiative to determine turn order
 	gs.RollInitiative()
+	
+	// Log initial state
+	gs.LogEvent("Game initialized", map[string]interface{}{
+		"grid_width": gridWidth,
+		"grid_height": gridHeight,
+		"entity_count": len(entities),
+	})
+	
 	return gs
 }
 
@@ -198,6 +210,46 @@ func RunCombat(gs *GameState) {
 			action = currentEntity.Controller.NextAction(gs, currentEntity)
 		}
 		gs.EndTurn()
+	}
+
+	winner := gs.GetWinner()
+	if winner != nil {
+		gs.LogEvent(fmt.Sprintf("%s wins the combat!", winner.Name), map[string]interface{}{
+			"winner": winner.Name,
+		})
+	} else {
+		gs.LogEvent("Combat ends with no winner.", map[string]interface{}{})
+	}
+}
+
+// RunCombatWithDelay runs the combat simulation with a delay between actions
+// to allow the frontend to display each step
+func RunCombatWithDelay(gs *GameState, delay time.Duration) {
+	// Log initial state
+	gs.LogEvent("Combat begins!", map[string]interface{}{
+		"message": "Combat simulation started",
+		"grid_width": gs.Grid.Width,
+		"grid_height": gs.Grid.Height,
+	})
+	
+	// Sleep to ensure frontend receives the initial state
+	time.Sleep(delay)
+
+	for !gs.IsCombatOver() {
+		currentEntity := gs.GetCurrentTurnEntity()
+		gs.StartTurn()
+		time.Sleep(delay) // Delay after starting turn
+		
+		action := currentEntity.Controller.NextAction(gs, currentEntity)
+		for action.Type != EndOfTurn {
+			ExecuteAction(gs, currentEntity, action)
+			time.Sleep(delay) // Delay after each action
+			
+			action = currentEntity.Controller.NextAction(gs, currentEntity)
+		}
+		
+		gs.EndTurn()
+		time.Sleep(delay) // Delay after ending turn
 	}
 
 	winner := gs.GetWinner()
