@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect, useContext, useCallback, useReducer } from 'react';
-import { apiClient, GameEvent, EntityState } from '../api';
+import { gameStateService, processGameEvent } from '../services/gameStateService';
+import { websocketService, WsEvent } from '../services/websocketService';
 
 // Create the context
 const GameContext = createContext(null);
@@ -9,94 +10,27 @@ export function useGame() {
     return useContext(GameContext);
 }
 
-// Helper function to get default max HP based on entity type
-// This ensures we have reasonable values when the server data is incomplete
-function getDefaultMaxHP(entity) {
-    // Use existing maxHp if it seems valid (greater than current HP)
-    if (entity.maxHp && entity.maxHp >= entity.hp) {
-        return entity.maxHp;
-    }
-    
-    // Otherwise, make some guesses based on name/faction
-    const name = entity.name.toLowerCase();
-    
-    if (name.includes("warrior")) {
-        return 30; // Warriors have 30 HP in the server code
-    } else if (name.includes("goblin")) {
-        return 20; // Goblins have 20 HP in the server code
-    } else if (entity.faction === "goodGuys") {
-        return Math.max(30, entity.hp); // Good guys are usually tougher
-    } else {
-        return Math.max(20, entity.hp); // Default for others
-    }
-}
-
 // Game state reducer to handle step-by-step updates
 function gameStateReducer(state, action) {
     switch (action.type) {
         case 'SET_INITIAL_STATE':
-            // Process entities to ensure proper HP values
-            const entities = action.payload.entities.map(e => ({
-                ...e,
-                // Fix HP if it's incorrect (ensure we start with full health)
-                hp: e.hp <= 0 ? getDefaultMaxHP(e) : e.hp,
-                // Fix maxHp if it's not set correctly
-                maxHp: e.maxHp <= 0 || e.maxHp < e.hp ? getDefaultMaxHP(e) : e.maxHp
-            }));
+            return action.payload;
+            
+        case 'PROCESS_EVENT':
+            return processGameEvent(state, action.payload);
+            
+        case 'RESET_STATE':
+            // This is now just a signal to perform a reset
+            // The actual reset will happen asynchronously
+            return state;
+            
+        case 'SET_RESET_STATE':
+            // New action for updating state after reset
+            return action.payload;
 
-            return {
-                ...action.payload,
-                entities,
-                // Keep track of original positions and HPs for reset
-                originalEntities: entities.map(e => ({...e}))
-            };
-            
-        case 'RESET_TO_INITIAL':
-            return {
-                ...state,
-                entities: state.originalEntities.map(e => ({...e})),
-                currentTurn: state.originalCurrentTurn
-            };
-            
-        case 'UPDATE_ENTITY_HP':
-            return {
-                ...state,
-                entities: state.entities.map(entity => 
-                    entity.id === action.payload.entityId
-                        ? { ...entity, hp: action.payload.hp }
-                        : entity
-                )
-            };
-            
-        case 'UPDATE_ENTITY_POSITION':
-            return {
-                ...state,
-                entities: state.entities.map(entity => 
-                    entity.id === action.payload.entityId
-                        ? { ...entity, position: action.payload.position }
-                        : entity
-                )
-            };
-            
-        case 'UPDATE_CURRENT_TURN':
-            return {
-                ...state,
-                currentTurn: action.payload.entityId
-            };
-            
-        case 'UPDATE_ENTITY_ACTIONS':
-            return {
-                ...state,
-                entities: state.entities.map(entity => 
-                    entity.id === action.payload.entityId
-                        ? { 
-                            ...entity, 
-                            actionsRemaining: action.payload.actionsRemaining,
-                            reactionsRemaining: action.payload.reactionsRemaining
-                        }
-                        : entity
-                )
-            };
+        case 'RECONCILE_STATE':
+            // For handling complete state reconciliation
+            return action.payload;
             
         default:
             return state;
@@ -125,28 +59,17 @@ export const GameProvider = ({ children }) => {
     useEffect(() => {
         const loadGameState = async () => {
             try {
-                const response = await apiClient.getGameState();
-                console.log('Initial game state response:', response);
+                const initialState = await gameStateService.getInitialState();
+                console.log('Initial game state loaded:', initialState);
                 
-                // The response is wrapped in a GameEvent object with the actual state in data
-                if (response && response.data) {
-                    const state = response.data;
-                    console.log('Initial game state:', state);
-                    
-                    // Store the original current turn for resets
-                    state.originalCurrentTurn = state.currentTurn;
-                    
-                    // Initialize the game state
-                    dispatch({ 
-                        type: 'SET_INITIAL_STATE', 
-                        payload: state 
-                    });
-                    
-                    // Now that we have state, load history
-                    loadStepHistory();
-                } else {
-                    console.error('Invalid game state response format:', response);
-                }
+                // Initialize the game state
+                dispatch({ 
+                    type: 'SET_INITIAL_STATE', 
+                    payload: initialState 
+                });
+                
+                // Now that we have state, load history
+                loadStepHistory();
             } catch (error) {
                 console.error('Failed to load game state:', error);
             }
@@ -156,7 +79,7 @@ export const GameProvider = ({ children }) => {
         const loadStepHistory = async () => {
             try {
                 // First load up to 100 steps of history
-                const history = await apiClient.getStepHistory(0, 100);
+                const history = await gameStateService.getStepHistory(0, 100);
                 console.log('Loaded step history:', history);
                 
                 if (Array.isArray(history) && history.length > 0) {
@@ -192,29 +115,10 @@ export const GameProvider = ({ children }) => {
             setConnected(false);
         };
         
-        // Handler for game state updates
-        const handleGameState = (event) => {
-            if (event.data) {
-                console.log('Game state update from server:', event.data);
-                // We don't automatically update the game state here, as we want
-                // all updates to happen through the step queue
-                
-                // Instead, we compare if there are new entities or major changes
-                // and then reset the game state only if needed
-                if (gameState && event.data.entities && 
-                    (event.data.entities.length !== gameState.entities.length)) {
-                    console.log('Major game state change detected, resetting state');
-                    dispatch({ 
-                        type: 'SET_INITIAL_STATE', 
-                        payload: event.data 
-                    });
-                }
-            }
-        };
-        
-        // Handler for all other game events
+        // Handler for game events
         const handleGameEvent = (event) => {
             console.log('Game event received via WebSocket:', event);
+            
             // Don't duplicate game state events in the combat log
             if (event.type === 'GAME_STATE') return;
             
@@ -237,111 +141,21 @@ export const GameProvider = ({ children }) => {
         };
         
         // Register event handlers
-        apiClient.on('connect', handleConnect);
-        apiClient.on('disconnect', handleDisconnect);
-        apiClient.on('gamestate', handleGameState); // Note: lowercase to match the event type
-        apiClient.on('all', handleGameEvent);
+        websocketService.on(WsEvent.CONNECT, handleConnect);
+        websocketService.on(WsEvent.DISCONNECT, handleDisconnect);
+        websocketService.on(WsEvent.GAME_EVENT, handleGameEvent);
         
         // Connect to server
-        apiClient.connect();
+        websocketService.connect();
         
         // Cleanup when unmounting
         return () => {
-            apiClient.off('connect', handleConnect);
-            apiClient.off('disconnect', handleDisconnect);
-            apiClient.off('gamestate', handleGameState);
-            apiClient.off('all', handleGameEvent);
-            apiClient.disconnect();
+            websocketService.off(WsEvent.CONNECT, handleConnect);
+            websocketService.off(WsEvent.DISCONNECT, handleDisconnect);
+            websocketService.off(WsEvent.GAME_EVENT, handleGameEvent);
+            websocketService.disconnect();
         };
     }, [historyLoaded, gameState, processedEvents]);
-    
-    // Process an event and update game state
-    const processEvent = useCallback((event) => {
-        if (!gameState) return;
-        
-        console.log('Processing event:', event);
-        
-        switch (event.type) {
-            case 'DAMAGE':
-            case 'DAMAGE_RESULT':
-                // Process damage events by updating entity HP
-                if (event.data && event.data.target && event.data.target.id) {
-                    if (event.data.taken) {
-                        const targetId = event.data.target.id;
-                        const entity = gameState.entities.find(e => e.id === targetId);
-                        if (entity) {
-                            const newHp = Math.max(0, entity.hp - event.data.taken);
-                            dispatch({
-                                type: 'UPDATE_ENTITY_HP',
-                                payload: {
-                                    entityId: targetId,
-                                    hp: newHp
-                                }
-                            });
-                        }
-                    }
-                }
-                break;
-                
-            case 'TURN_START':
-                // Update current turn
-                if (event.data && event.data.entity && event.data.entity.id) {
-                    dispatch({
-                        type: 'UPDATE_CURRENT_TURN',
-                        payload: {
-                            entityId: event.data.entity.id
-                        }
-                    });
-                    
-                    // Reset actions for the entity
-                    const entity = gameState.entities.find(e => e.id === event.data.entity.id);
-                    if (entity) {
-                        dispatch({
-                            type: 'UPDATE_ENTITY_ACTIONS',
-                            payload: {
-                                entityId: event.data.entity.id,
-                                actionsRemaining: 3, // Default for PF2e
-                                reactionsRemaining: 1
-                            }
-                        });
-                    }
-                }
-                break;
-                
-            case 'ENTITY_MOVE':
-                // Update entity position
-                if (event.data && event.data.entity && event.data.entity.id && event.data.position) {
-                    dispatch({
-                        type: 'UPDATE_ENTITY_POSITION',
-                        payload: {
-                            entityId: event.data.entity.id,
-                            position: event.data.position
-                        }
-                    });
-                }
-                break;
-                
-            case 'ACTION_COMPLETE':
-                // Update action count
-                if (event.data && event.data.entity && event.data.entity.id && 
-                    typeof event.data.actionsRemaining !== 'undefined') {
-                    dispatch({
-                        type: 'UPDATE_ENTITY_ACTIONS',
-                        payload: {
-                            entityId: event.data.entity.id,
-                            actionsRemaining: event.data.actionsRemaining,
-                            reactionsRemaining: event.data.reactionsRemaining || 0
-                        }
-                    });
-                }
-                break;
-                
-            default:
-                // For other event types, log but don't update state
-                console.log('Unhandled event type:', event.type);
-                break;
-        }
-    }, [gameState]);
     
     // Auto-advance through history or on user click
     const nextStep = useCallback(() => {
@@ -351,37 +165,46 @@ export const GameProvider = ({ children }) => {
         const event = pendingEvents[0];
         
         // Process the event and update game state
-        processEvent(event);
+        dispatch({
+            type: 'PROCESS_EVENT',
+            payload: event
+        });
         
         // Move the event from pending to processed
         setProcessedEvents(prev => [...prev, event]);
         setPendingEvents(prev => prev.slice(1));
-    }, [pendingEvents, gameState, processEvent]);
+    }, [pendingEvents, gameState]);
     
     // Reset game state to initial state
-    const resetGameState = useCallback(() => {
+    const resetGameState = useCallback(async () => {
         if (!gameState) return;
         
-        // Reset to initial state
-        dispatch({ type: 'RESET_TO_INITIAL' });
+        // Signal that a reset is happening
+        dispatch({ type: 'RESET_STATE' });
         
-        // Clear processed events and reload pending events
-        setProcessedEvents([]);
-        
-        // Reload step history to repopulate pending events
-        const loadStepHistory = async () => {
-            try {
-                const history = await apiClient.getStepHistory(0, 100);
-                if (Array.isArray(history) && history.length > 0) {
-                    setPendingEvents(history);
-                    setHistoryIndex(history.length);
-                }
-            } catch (error) {
-                console.error('Failed to reload step history:', error);
+        try {
+            // Get fresh initial state from server
+            const initialState = await gameStateService.getInitialState();
+            console.log('Loaded fresh initial state for reset:', initialState);
+            
+            // Set the new initial state
+            dispatch({ 
+                type: 'SET_RESET_STATE', 
+                payload: initialState 
+            });
+            
+            // Clear processed events
+            setProcessedEvents([]);
+            
+            // Reload step history to repopulate pending events
+            const history = await gameStateService.getStepHistory(0, 100);
+            if (Array.isArray(history) && history.length > 0) {
+                setPendingEvents(history);
+                setHistoryIndex(history.length);
             }
-        };
-        
-        loadStepHistory();
+        } catch (error) {
+            console.error('Failed to reset game state:', error);
+        }
     }, [gameState]);
     
     // Load more history if needed
@@ -389,7 +212,7 @@ export const GameProvider = ({ children }) => {
         if (!gameState) return;
         
         try {
-            const moreHistory = await apiClient.getStepHistory(historyIndex, 100);
+            const moreHistory = await gameStateService.getStepHistory(historyIndex, 100);
             if (Array.isArray(moreHistory) && moreHistory.length > 0) {
                 console.log(`Loaded ${moreHistory.length} more historical events`);
                 setPendingEvents(prev => [...moreHistory, ...prev]);
@@ -402,23 +225,31 @@ export const GameProvider = ({ children }) => {
         }
     }, [historyIndex, gameState]);
     
-    // Send an action to the server
-    const sendAction = useCallback(async (entityId, actionCardId, targetId, params = {}) => {
-        if (!entityId || !actionCardId || !targetId) return;
+    // Reconcile with server state if needed
+    const reconcileState = useCallback(async () => {
+        if (!gameState) return;
         
         try {
-            // Build the command
-            const command = {
-                entity_id: entityId,
-                action_card_id: actionCardId,
-                params: {
-                    ...params,
-                    targetID: targetId
-                }
-            };
+            const serverState = await gameStateService.getCurrentState();
+            console.log('Reconciling with server state:', serverState);
             
+            // Update game state with server state
+            dispatch({
+                type: 'RECONCILE_STATE',
+                payload: serverState.data
+            });
+        } catch (error) {
+            console.error('Failed to reconcile with server state:', error);
+        }
+    }, [gameState]);
+    
+    // Send an action to the server
+    const sendAction = useCallback(async (entityId, actionCardId, targetId, params = {}) => {
+        if (!entityId || !actionCardId) return;
+        
+        try {
             // Send to server
-            const response = await apiClient.sendCommand(command);
+            const response = await gameStateService.sendAction(entityId, actionCardId, targetId, params);
             console.log('Action response:', response);
             
             // Clear selections
@@ -438,7 +269,7 @@ export const GameProvider = ({ children }) => {
         return gameState.entities.find(e => e.id === id) || null;
     }, [gameState]);
     
-    // Get current HP directly from game state
+    // Get entity current HP
     const getEntityCurrentHP = useCallback((id) => {
         if (!gameState || !id) return 0;
         const entity = gameState.entities.find(e => e.id === id);
@@ -474,6 +305,7 @@ export const GameProvider = ({ children }) => {
         nextStep,
         loadMoreHistory,
         resetGameState,
+        reconcileState,
         
         // Status
         historyLoaded,

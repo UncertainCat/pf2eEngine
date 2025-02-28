@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PF2E Test Page</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    div { margin-bottom: 10px; padding: 10px; border: 1px solid #ccc; }
+    button { padding: 5px 10px; }
+  </style>
+</head>
+<body>
+  <h1>PF2E Engine Test Page</h1>
+  
+  <div id="status">Status: Checking...</div>
+  
+  <div>
+    <button id="testApi">Test API</button>
+    <button id="testWs">Test WebSocket</button>
+  </div>
+  
+  <div id="result"></div>
+  
+  <script>
+    // Update status
+    function updateStatus(message, isError = false) {
+      const statusEl = document.getElementById('status');
+      statusEl.innerText = `Status: ${message}`;
+      statusEl.style.color = isError ? 'red' : 'green';
+    }
+    
+    // Show result
+    function showResult(message, isError = false) {
+      const resultEl = document.getElementById('result');
+      resultEl.innerText = message;
+      resultEl.style.color = isError ? 'red' : 'black';
+    }
+    
+    // Test API endpoint
+    document.getElementById('testApi').addEventListener('click', async () => {
+      try {
+        updateStatus('Testing API...');
+        const response = await fetch('/api/v1/state');
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        const data = await response.json();
+        updateStatus('API test successful');
+        showResult(JSON.stringify(data, null, 2));
+      } catch (error) {
+        updateStatus(`API test failed: ${error.message}`, true);
+        showResult(error.message, true);
+      }
+    });
+    
+    // Test WebSocket connection
+    document.getElementById('testWs').addEventListener('click', () => {
+      try {
+        updateStatus('Testing WebSocket...');
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        
+        const socket = new WebSocket(wsUrl);
+        
+        socket.onopen = () => {
+          updateStatus('WebSocket connected successfully');
+          showResult('WebSocket connection established');
+        };
+        
+        socket.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          showResult(`Received: ${JSON.stringify(data, null, 2)}`);
+        };
+        
+        socket.onerror = (error) => {
+          updateStatus('WebSocket error', true);
+          showResult(`WebSocket error: ${error}`, true);
+        };
+        
+        socket.onclose = (event) => {
+          updateStatus(`WebSocket closed: ${event.code}`, true);
+          showResult(`WebSocket closed: ${event.code} - ${event.reason || 'No reason provided'}`, true);
+        };
+      } catch (error) {
+        updateStatus(`WebSocket test failed: ${error.message}`, true);
+        showResult(error.message, true);
+      }
+    });
+    
+    // Check if page loaded
+    window.onload = () => {
+      updateStatus('Page loaded successfully');
+    };
+  </script>
+</body>
+</html>

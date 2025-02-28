@@ -1,0 +1,7 @@
+Token movement animation has been implemented in the frontend code. The implementation includes:
+1. Enhanced EntityToken component with animation support using requestAnimationFrame
+2. Position tracking and interpolation in gameStateService.js
+3. Animation timing controls in EntityToken.js
+4. Grid cell coordinate display for debugging
+
+These changes will allow tokens to smoothly slide between grid cells when they move, rather than teleporting instantly.

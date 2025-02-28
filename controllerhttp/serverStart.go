@@ -79,6 +79,10 @@ func (cs *ControllerServer) startGameStateUpdates() {
 				Version:   api.CurrentVersion,
 				Timestamp: time.Now(),
 				Message:   "Game state update",
+				Metadata: map[string]interface{}{
+					"isInitial": false,
+					"isUpdate": true,
+				},
 			},
 			Data: gameState,
 		}

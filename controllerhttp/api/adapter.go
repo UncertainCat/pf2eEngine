@@ -74,7 +74,7 @@ func StepToEvent(step game.Step, message string) GameEvent {
 			Taken:   s.Damage.Taken,
 		}
 
-	case game.StartTurnStep:
+	case *game.StartTurnStep:
 		if s.Entity != nil {
 			event.Data = TurnEventData{
 				Entity: EntityRef{
@@ -84,7 +84,7 @@ func StepToEvent(step game.Step, message string) GameEvent {
 			}
 		}
 
-	case game.EndTurnStep:
+	case *game.EndTurnStep:
 		if s.Entity != nil {
 			event.Data = TurnEventData{
 				Entity: EntityRef{
@@ -192,11 +192,17 @@ func EntityToAPIEntity(entity *game.Entity, grid *game.Grid) EntityState {
 		factionStr = "badGuys"
 	}
 
+	// If MaxHP is set, use it, otherwise fall back to current HP
+	maxHP := entity.HP
+	if entity.MaxHP > 0 {
+		maxHP = entity.MaxHP
+	}
+
 	return EntityState{
 		ID:                 entity.Id,
 		Name:               entity.Name,
 		HP:                 entity.HP,
-		MaxHP:              entity.HP, // For now, use current HP as max HP if not tracked separately
+		MaxHP:              maxHP,
 		AC:                 entity.AC,
 		ActionsRemaining:   entity.ActionsRemaining,
 		ReactionsRemaining: entity.ReactionsRemaining,

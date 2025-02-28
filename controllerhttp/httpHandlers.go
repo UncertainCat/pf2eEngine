@@ -108,8 +108,22 @@ func (cs *ControllerServer) GameStateHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	
-	// Convert game state to API format
-	gameState := api.GameStateToAPIState(cs.GameState)
+	// Check if this is a request for initial state
+	isInitial := r.URL.Query().Get("initial") == "true"
+	
+	var gameState api.GameState
+	var message string
+	
+	if isInitial {
+		// Get a fresh copy of the initial state
+		initialState := cs.GameState.GetInitialState()
+		gameState = api.GameStateToAPIState(initialState)
+		message = "Initial game state"
+	} else {
+		// Use current game state
+		gameState = api.GameStateToAPIState(cs.GameState)
+		message = "Current game state"
+	}
 	
 	// Create an event wrapper
 	event := api.GameEvent{
@@ -117,7 +131,10 @@ func (cs *ControllerServer) GameStateHandler(w http.ResponseWriter, r *http.Requ
 			Type:      api.EventTypeGameState,
 			Version:   api.CurrentVersion,
 			Timestamp: time.Now(),
-			Message:   "Current game state",
+			Message:   message,
+			Metadata: map[string]interface{}{
+				"isInitial": isInitial,
+			},
 		},
 		Data: gameState,
 	}

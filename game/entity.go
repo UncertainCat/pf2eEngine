@@ -9,6 +9,7 @@ type Entity struct {
 	Id                 uuid.UUID
 	Name               string
 	HP                 int
+	MaxHP              int  // Maximum HP for tracking
 	AC                 int
 	Initiative         int
 	ActionsRemaining   int
@@ -36,6 +37,7 @@ func NewEntity(name string, hp, ac int, faction Faction) *Entity {
 		Id:                 uuid.New(),
 		Name:               name,
 		HP:                 hp,
+		MaxHP:              hp, // Set max HP to initial HP
 		AC:                 ac,
 		ActionsRemaining:   3,
 		ReactionsRemaining: 1,

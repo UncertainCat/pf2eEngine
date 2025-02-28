@@ -14,12 +14,15 @@ type StepCallback func(step interface{}, message string)
 // GameState represents the state of the game, including turn order and current turn
 // Logs are added to track events in both human-readable and JSON format
 type GameState struct {
-	Grid         *Grid
-	Initiative   []*Entity
-	CurrentTurn  int
-	Logs         []LogEntry
-	StepHistory  *StepHistory
-	StepCallback StepCallback
+	Grid                *Grid
+	Initiative          []*Entity
+	CurrentTurn         int
+	Logs                []LogEntry
+	StepHistory         *StepHistory
+	StepCallback        StepCallback
+	InitialEntities     []*Entity    // Copy of initial entities for resetting
+	InitialEntityPos    map[string]Position // Initial positions of entities
+	InitialCurrentTurn  int          // Initial current turn
 }
 
 type StepHistory struct {
@@ -46,20 +49,51 @@ func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
 	for _, spawn := range spawns {
 		entities = append(entities, spawn.Unit)
 	}
+	
+	// Initialize game state
 	gs := &GameState{
 		CurrentTurn: 0,
 		Grid:        NewGrid(gridWidth, gridHeight),
 		Initiative:  entities,
 		StepHistory: &StepHistory{},
+		InitialEntityPos: make(map[string]Position), // Using ID string as key
 	}
 	
-	// Place entities on the grid at their initial positions
+	// Save initial positions as we place entities
 	for _, e := range spawns {
-		gs.Grid.AddEntity(Position{X: e.Coordinates[0], Y: e.Coordinates[1]}, e.Unit)
+		pos := Position{X: e.Coordinates[0], Y: e.Coordinates[1]}
+		gs.Grid.AddEntity(pos, e.Unit)
+		gs.InitialEntityPos[e.Unit.Id.String()] = pos
 	}
 	
 	// Roll initiative to determine turn order
 	gs.RollInitiative()
+	
+	// Save initial state AFTER initiative is rolled
+	gs.InitialCurrentTurn = gs.CurrentTurn
+	
+	// Create deep copies of all entities to save initial state
+	gs.InitialEntities = make([]*Entity, len(gs.Initiative))
+	for i, entity := range gs.Initiative {
+		// Deep copy each entity
+		copiedEntity := &Entity{
+			Id:                 entity.Id,
+			Name:               entity.Name,
+			HP:                 entity.HP,
+			MaxHP:              entity.HP, // Store original HP as MaxHP
+			AC:                 entity.AC,
+			ActionsRemaining:   entity.ActionsRemaining,
+			ReactionsRemaining: entity.ReactionsRemaining,
+			Faction:            entity.Faction,
+			// Deep copy action cards array
+			ActionCards:        make([]*ActionCard, len(entity.ActionCards)),
+		}
+		
+		// Copy action cards
+		copy(copiedEntity.ActionCards, entity.ActionCards)
+		
+		gs.InitialEntities[i] = copiedEntity
+	}
 	
 	// Log initial state
 	gs.LogEvent("Game initialized", map[string]interface{}{
@@ -68,12 +102,66 @@ func NewGameState(spawns []Spawn, gridWidth, gridHeight int) *GameState {
 		"entity_count": len(entities),
 	})
 	
+	// Update all entities with their MaxHP
+	for _, entity := range gs.Initiative {
+		entity.MaxHP = entity.HP
+	}
+	
 	return gs
 }
 
 type StartTurnStep struct {
 	BaseStep
 	Entity *Entity
+}
+
+// GetInitialState creates a new GameState instance with the initial state
+func (gs *GameState) GetInitialState() *GameState {
+	// Create a new grid
+	initialGrid := NewGrid(gs.Grid.Width, gs.Grid.Height)
+	
+	// Create a new state
+	initialState := &GameState{
+		Grid:         initialGrid,
+		Initiative:   make([]*Entity, len(gs.InitialEntities)),
+		CurrentTurn:  gs.InitialCurrentTurn,
+		Logs:         []LogEntry{},
+		StepHistory:  &StepHistory{},
+		InitialEntityPos: gs.InitialEntityPos,
+	}
+	
+	// Deep copy all initial entities
+	for i, entity := range gs.InitialEntities {
+		copiedEntity := &Entity{
+			Id:                 entity.Id,
+			Name:               entity.Name,
+			HP:                 entity.HP,
+			MaxHP:              entity.MaxHP,
+			AC:                 entity.AC,
+			ActionsRemaining:   entity.ActionsRemaining,
+			ReactionsRemaining: entity.ReactionsRemaining,
+			Faction:            entity.Faction,
+			ActionCards:        make([]*ActionCard, len(entity.ActionCards)),
+		}
+		
+		// Copy action cards
+		copy(copiedEntity.ActionCards, entity.ActionCards)
+		
+		initialState.Initiative[i] = copiedEntity
+		
+		// Place entity on the grid at its initial position
+		if pos, ok := gs.InitialEntityPos[entity.Id.String()]; ok {
+			initialGrid.AddEntity(pos, copiedEntity)
+		}
+	}
+	
+	// Copy initial entities and positions to the new state
+	initialState.InitialEntities = make([]*Entity, len(gs.InitialEntities))
+	for i, entity := range gs.InitialEntities {
+		initialState.InitialEntities[i] = entity
+	}
+	
+	return initialState
 }
 
 type EndTurnStep struct {
@@ -85,114 +173,159 @@ func (gs *GameState) IsEntityTurn(e *Entity) bool {
 	return gs.GetCurrentTurnEntity() == e
 }
 
-// RollInitiative determines initiative for all combatants and sorts them in descending order
+func (e *EndTurnStep) Type() StepType {
+	return EndTurn
+}
+
+func (e *EndTurnStep) Metadata() map[string]interface{} {
+	return map[string]interface{}{
+		"entity_id":   e.Entity.Id.String(),
+		"entity_name": e.Entity.Name,
+	}
+}
+
+func (e *StartTurnStep) Type() StepType {
+	return StartTurn
+}
+
+func (e *StartTurnStep) Metadata() map[string]interface{} {
+	return map[string]interface{}{
+		"entity_id":   e.Entity.Id.String(),
+		"entity_name": e.Entity.Name,
+	}
+}
+
+// RollInitiative rolls initiative for each entity and sorts the initiative order
 func (gs *GameState) RollInitiative() {
-	for _, e := range gs.Initiative {
+	// Roll initiative for each entity
+	for _, entity := range gs.Initiative {
 		roll := dice.Roll(20)
-		e.RollInitiative(roll)
-		executeStep(gs, StartTurnStep{
-			BaseStep: BaseStep{StepType: StartTurn},
-			Entity:   e,
-		}, fmt.Sprintf("%s rolls initiative: %d", e.Name, e.Initiative))
+		fmt.Printf("%s rolls initiative: %d\n", entity.Name, roll)
+		entity.Initiative = roll
 	}
 
+	// Sort by initiative score in descending order
 	sort.Slice(gs.Initiative, func(i, j int) bool {
 		return gs.Initiative[i].Initiative > gs.Initiative[j].Initiative
 	})
 
-	executeStep(gs, StartTurnStep{
-		BaseStep: BaseStep{StepType: StartTurn},
-		Entity:   nil,
-	}, "Initiative order determined")
+	fmt.Println("Initiative order determined")
 }
 
-func (gs *GameState) getInitiativeOrder() []string {
-	order := []string{}
-	for _, e := range gs.Initiative {
-		order = append(order, fmt.Sprintf("%s (Initiative: %d)", e.Name, e.Initiative))
-	}
-	return order
-}
-
-// IsCombatOver checks if the combat has ended
-func (gs *GameState) IsCombatOver() bool {
-	var faction Faction
-	firstLivingEntity := true
-
-	for _, e := range gs.Initiative {
-		if e.IsAlive() {
-			if firstLivingEntity {
-				faction = e.Faction
-				firstLivingEntity = false
-			} else if e.Faction != faction {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// GetCurrentTurnEntity returns the entity whose turn it is
-func (gs *GameState) GetCurrentTurnEntity() *Entity {
-	return gs.Initiative[gs.CurrentTurn]
-}
-
-// LogEvent logs both human-readable and JSON-format logs
 func (gs *GameState) LogEvent(message string, metadata map[string]interface{}) {
+	jsonData, _ := json.Marshal(metadata)
 	logEntry := LogEntry{
 		Message:  message,
 		Metadata: metadata,
-		JSON:     toJSON(metadata),
+		JSON:     string(jsonData),
 	}
 	gs.Logs = append(gs.Logs, logEntry)
-	fmt.Println(message)
 }
 
-func toJSON(metadata map[string]interface{}) string {
-	jsonData, _ := json.Marshal(metadata)
-	return string(jsonData)
+// StartCombat signals that combat is starting and logs it
+func (gs *GameState) StartCombat() {
+	gs.LogEvent("Combat started", map[string]interface{}{
+		"time": time.Now().String(),
+	})
 }
 
-// StartTurn triggers a StartTurnStep and logs the event
-func (gs *GameState) StartTurn() {
-	currentEntity := gs.GetCurrentTurnEntity()
-	startStep := StartTurnStep{
-		BaseStep: BaseStep{StepType: StartTurn},
-		Entity:   currentEntity,
-	}
-	executeStep(gs, startStep, fmt.Sprintf("%s's turn begins", currentEntity.Name))
-
-	currentEntity.ResetTurnResources()
-}
-
-// EndTurn triggers an EndTurnStep and logs the event
-func (gs *GameState) EndTurn() {
-	currentEntity := gs.GetCurrentTurnEntity()
-	endStep := EndTurnStep{
-		BaseStep: BaseStep{StepType: EndTurn},
-		Entity:   currentEntity,
-	}
-	executeStep(gs, endStep, fmt.Sprintf("%s's turn ends", currentEntity.Name))
-
-	for {
-		gs.CurrentTurn = (gs.CurrentTurn + 1) % len(gs.Initiative)
-		if gs.Initiative[gs.CurrentTurn].IsAlive() {
-			break
+// NextTurn advances to the next entity in the initiative order and returns the new current entity
+func (gs *GameState) NextTurn() *Entity {
+	// Get the current entity
+	entity := gs.GetCurrentTurnEntity()
+	
+	// End its turn if it's a valid entity
+	if entity != nil {
+		// Create end turn step
+		endTurnStep := &EndTurnStep{
+			Entity: entity,
 		}
+		
+		// Add to step history
+		gs.StepHistory.AddStep(endTurnStep)
+		
+		// Tell controller via callback
+		if gs.StepCallback != nil {
+			gs.StepCallback(endTurnStep, fmt.Sprintf("%s's turn ends", entity.Name))
+		}
+		
+		// Log the end of the turn
+		gs.LogEvent(fmt.Sprintf("%s's turn ends", entity.Name), map[string]interface{}{
+			"entity_id":   entity.Id.String(),
+			"entity_name": entity.Name,
+		})
 	}
-}
-
-// GetWinner returns the winning entity, if combat is over
-func (gs *GameState) GetWinner() *Entity {
-	if !gs.IsCombatOver() {
-		return nil
-	}
+	
+	// Advance to the next entity in initiative order
+	gs.CurrentTurn = (gs.CurrentTurn + 1) % len(gs.Initiative)
+	
+	// If all entities are dead except one, end combat
+	aliveCount := 0
+	var lastAlive *Entity
 	for _, e := range gs.Initiative {
 		if e.IsAlive() {
-			return e
+			aliveCount++
+			lastAlive = e
 		}
 	}
-	return nil
+	
+	// If only one entity is alive, end combat
+	if aliveCount <= 1 && lastAlive != nil {
+		gs.LogEvent(fmt.Sprintf("%s wins the combat!", lastAlive.Name), map[string]interface{}{
+			"winner":      lastAlive.Name,
+			"winner_id":   lastAlive.Id.String(),
+			"winner_hp":   lastAlive.HP,
+			"combat_over": true,
+		})
+		
+		// Output the winner
+		fmt.Printf("%s wins the combat!\n", lastAlive.Name)
+		
+		// Return nil to indicate combat is over
+		return nil
+	}
+	
+	// Reset actions for new entity's turn
+	entity = gs.GetCurrentTurnEntity()
+	entity.ResetTurnResources()
+	
+	// Skip dead entities
+	for !entity.IsAlive() {
+		gs.CurrentTurn = (gs.CurrentTurn + 1) % len(gs.Initiative)
+		entity = gs.GetCurrentTurnEntity()
+		entity.ResetTurnResources()
+	}
+	
+	// Create start turn step
+	startTurnStep := &StartTurnStep{
+		Entity: entity,
+	}
+	
+	// Add to step history
+	gs.StepHistory.AddStep(startTurnStep)
+	
+	// Tell controller via callback
+	if gs.StepCallback != nil {
+		gs.StepCallback(startTurnStep, fmt.Sprintf("%s's turn begins", entity.Name))
+	}
+	
+	// Log the start of the turn
+	gs.LogEvent(fmt.Sprintf("%s's turn begins", entity.Name), map[string]interface{}{
+		"entity_id":   entity.Id.String(),
+		"entity_name": entity.Name,
+	})
+	
+	fmt.Printf("%s's turn begins\n", entity.Name)
+	
+	return entity
+}
+
+// GetCurrentTurnEntity returns a pointer to the entity whose turn it currently is
+func (gs *GameState) GetCurrentTurnEntity() *Entity {
+	if len(gs.Initiative) == 0 {
+		return nil
+	}
+	return gs.Initiative[gs.CurrentTurn]
 }
 
 type Spawn struct {
@@ -200,64 +333,10 @@ type Spawn struct {
 	Coordinates [2]int
 }
 
-func RunCombat(gs *GameState) {
-	for !gs.IsCombatOver() {
-		currentEntity := gs.GetCurrentTurnEntity()
-		gs.StartTurn()
-		action := currentEntity.Controller.NextAction(gs, currentEntity)
-		for action.Type != EndOfTurn {
-			ExecuteAction(gs, currentEntity, action)
-			action = currentEntity.Controller.NextAction(gs, currentEntity)
-		}
-		gs.EndTurn()
-	}
-
-	winner := gs.GetWinner()
-	if winner != nil {
-		gs.LogEvent(fmt.Sprintf("%s wins the combat!", winner.Name), map[string]interface{}{
-			"winner": winner.Name,
-		})
-	} else {
-		gs.LogEvent("Combat ends with no winner.", map[string]interface{}{})
-	}
-}
-
-// RunCombatWithDelay runs the combat simulation with a delay between actions
-// to allow the frontend to display each step
-func RunCombatWithDelay(gs *GameState, delay time.Duration) {
-	// Log initial state
-	gs.LogEvent("Combat begins!", map[string]interface{}{
-		"message": "Combat simulation started",
-		"grid_width": gs.Grid.Width,
-		"grid_height": gs.Grid.Height,
-	})
-	
-	// Sleep to ensure frontend receives the initial state
-	time.Sleep(delay)
-
-	for !gs.IsCombatOver() {
-		currentEntity := gs.GetCurrentTurnEntity()
-		gs.StartTurn()
-		time.Sleep(delay) // Delay after starting turn
-		
-		action := currentEntity.Controller.NextAction(gs, currentEntity)
-		for action.Type != EndOfTurn {
-			ExecuteAction(gs, currentEntity, action)
-			time.Sleep(delay) // Delay after each action
-			
-			action = currentEntity.Controller.NextAction(gs, currentEntity)
-		}
-		
-		gs.EndTurn()
-		time.Sleep(delay) // Delay after ending turn
-	}
-
-	winner := gs.GetWinner()
-	if winner != nil {
-		gs.LogEvent(fmt.Sprintf("%s wins the combat!", winner.Name), map[string]interface{}{
-			"winner": winner.Name,
-		})
-	} else {
-		gs.LogEvent("Combat ends with no winner.", map[string]interface{}{})
+// Creates a spawn specification for an entity
+func NewSpawn(entity *Entity, x, y int) Spawn {
+	return Spawn{
+		Unit:        entity,
+		Coordinates: [2]int{x, y},
 	}
 }

@@ -118,11 +118,20 @@ class ApiClient extends EventEmitter {
         this.manualDisconnect = false;
     }
 
-    // Get current game state
-    async getGameState() {
+    // Get initial game state (for use at start of combat)
+    async getInitialState() {
+        const response = await fetch(`${this.baseUrl}/api/v1/state?initial=true`);
+        if (!response.ok) {
+            throw new Error(`Failed to get initial state: ${response.statusText}`);
+        }
+        return response.json();
+    }
+    
+    // Get current game state (for reconciliation when needed)
+    async getCurrentState() {
         const response = await fetch(`${this.baseUrl}/api/v1/state`);
         if (!response.ok) {
-            throw new Error(`Failed to get game state: ${response.statusText}`);
+            throw new Error(`Failed to get current state: ${response.statusText}`);
         }
         return response.json();
     }

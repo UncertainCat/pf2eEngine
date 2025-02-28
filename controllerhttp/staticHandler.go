@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ServeStaticFiles configures the server to serve the React frontend
@@ -14,28 +15,52 @@ func (cs *ControllerServer) ServeStaticFiles() {
 
 	// Check if directory exists
 	if _, err := os.Stat(frontendDir); os.IsNotExist(err) {
-		fmt.Printf("Warning: Frontend directory %s does not exist. Static files will not be served.\n", frontendDir)
+		fmt.Printf("Warning: Frontend directory %s does not exist.\n", frontendDir)
 		return
 	}
 
-	// Create a file server to serve static assets
-	fs := http.FileServer(http.Dir(frontendDir))
+	// Handle static files with proper MIME types
+	http.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
+		filePath := filepath.Join(frontendDir, r.URL.Path)
+		fmt.Printf("Static file request: %s -> %s\n", r.URL.Path, filePath)
 
-	// Handle routes for static files
-	http.Handle("/static/", fs)
-	http.Handle("/assets/", fs)
-	http.Handle("/favicon.ico", fs)
+		// Set proper Content-Type based on file extension
+		ext := strings.ToLower(filepath.Ext(filePath))
+		switch ext {
+		case ".css":
+			w.Header().Set("Content-Type", "text/css")
+		case ".js":
+			w.Header().Set("Content-Type", "application/javascript")
+		case ".html":
+			w.Header().Set("Content-Type", "text/html")
+		case ".jpg", ".jpeg":
+			w.Header().Set("Content-Type", "image/jpeg")
+		case ".png":
+			w.Header().Set("Content-Type", "image/png")
+		case ".svg":
+			w.Header().Set("Content-Type", "image/svg+xml")
+		case ".json":
+			w.Header().Set("Content-Type", "application/json")
+		}
 
-	// Special handling for index.html
+		// Actually serve the file
+		http.ServeFile(w, r, filePath)
+	})
+
+	// Handle root requests (serve index.html)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// API endpoints should still go to their handlers
+		// Skip API endpoints
 		if isAPIPath(r.URL.Path) {
 			return
 		}
 
-		// For all other paths, serve index.html
-		indexPath := filepath.Join(frontendDir, "index.html")
-		http.ServeFile(w, r, indexPath)
+		fmt.Printf("UI request: %s\n", r.URL.Path)
+		
+		// Set content type explicitly
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		
+		// Serve index.html for all non-API paths
+		http.ServeFile(w, r, filepath.Join(frontendDir, "index.html"))
 	})
 
 	fmt.Println("Static file server configured. Frontend available at http://localhost:8080")
